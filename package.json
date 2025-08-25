@@ -1,0 +1,28 @@
+{
+  "name": "@isopodlabs/make",
+  "version": "0.0.0",
+  "description": "A package for reading and running makefiles with TypeScript.",
+  "main": "dist/make.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "typescript",
+    "make",
+    "makefile",
+    "build"
+  ],
+  "author": "Adrian Stephens",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.13.8",
+    "eslint": "^9.21.0",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.26.0"
+  }
+}
