@@ -9,6 +9,7 @@ export interface VariableValue {
 	recurse?:		boolean;
 	priv?:			boolean;
 	export?:		boolean;
+	builtin?:		boolean;
 };
 
 export type Variables = Map<string, VariableValue>;
@@ -55,14 +56,12 @@ export function anchored(pattern: string) {
 	return new RegExp('^' + pattern + '$');
 }
 
-export function _wildRe(pattern: string, pct: string) {
-	return pattern
-		.replace(/[*?.+^${}()|[\]\\]/g, '\\$&') // Escape regex chars
-		.replace('%', pct);
+export function escapeRe(pattern: string) {
+	return pattern.replace(/[*?.+^${}()|[\]\\]/g, '\\$&'); // Escape regex chars
 }
 
 function fixPatterns(patterns: string[]) {
-	return new RegExp(patterns.map(i => _wildRe(i, '.*?')).join('|'));
+	return new RegExp(patterns.map(i => escapeRe(i).replace('%', '.*?')).join('|'));
 }
 
 function applyWords(names: string, func: (word: string)=>string) {
@@ -73,7 +72,7 @@ async function applyWordsAsync(names: string, func: (word: string)=>Promise<stri
 }
 
 function patsubst(pattern: string, replacement: string, text: string) {
-	const re = anchored(_wildRe(pattern, '(.*?)'));
+	const re = anchored(escapeRe(pattern).replace('%', '(.*?)'));
 	replacement = replacement.replace('%', '$1');
 	return applyWords(text, word => word.replace(re, replacement));
 }
@@ -434,10 +433,10 @@ export class VariablesClass extends ExpanderClass {
 		if (!scope)
 			scope = this.variables;
 
-		const old_origin = scope.get(name)?.origin;
-		if (old_origin === 'command line' && origin !== 'override')
+		const old = scope.get(name);
+		if (old?.origin === 'command line' && origin !== 'override')
 			return;
-		if (old_origin === 'environment' && origin === 'override')
+		if (old?.origin === 'environment' && origin === 'override')
 			origin = 'environment override';
 
 		const exp = new ExpanderClass(readscope, this.functions);
@@ -463,8 +462,15 @@ export class VariablesClass extends ExpanderClass {
 					scope.get(name)!.value += ' ' + (scope.get(name)!.recurse ? await exp.expand(value) : value);
 				break;
 
+			case '!':
+				value = await this.functions.shell(this, value);
+				//fallthrough
 			default:
-				scope.set(name, { value, origin, priv, recurse: true });
+				if (old?.builtin) {
+					[old.value, old.origin] = [value, origin];
+				} else {
+					scope.set(name, { value, origin, priv, recurse: true });
+				}
 				break;
 		}
 	}

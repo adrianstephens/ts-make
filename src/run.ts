@@ -1,5 +1,5 @@
 import { Makefile, RuleEntry } from './parse';
-import { Variables, Expander, toWords, fromWords, anchored, _wildRe } from './variables';
+import { Variables, Expander, toWords, fromWords, anchored, escapeRe } from './variables';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -91,7 +91,7 @@ class Rules {
 			const wild = targets.filter(t => t.includes('%'));
 
 			if (wild.length) {
-				this.patternRules.push({re: anchored(wild.map(t => _wildRe(t, '(.*?)')).join('|')), value: r2});
+				this.patternRules.push({re: anchored(wild.map(t => escapeRe(t).replace('%', '(.*?)')).join('|')), value: r2});
 
 			} else if (r.grouped) {
 				// Record grouped explicit rules (no patterns) for coalescing
@@ -127,7 +127,7 @@ class Rules {
 			keys.filter(t => !t.includes('%')).forEach(t => this.exactScopes[t] = scope);
 
 			if (key.includes('%'))
-				this.patternScopes.push({re: anchored(keys.filter(t => t.includes('%')).map(t => _wildRe(t, '.*?')).join('|')), value: scope});
+				this.patternScopes.push({re: anchored(keys.filter(t => t.includes('%')).map(t => escapeRe(t).replace('%', '.*?')).join('|')), value: scope});
 		}
 
 	}
@@ -408,8 +408,8 @@ export async function execute(make: Makefile, goals: string[] = [], opt: Execute
 		pathCache.clear();
 	}
 
-	function relative(filename: string): string {
-		return path.relative(cwd, filename);
+	function relative(filename?: string): string {
+		return filename ? path.relative(cwd, filename) : '';
 	}
 
 	const visited = new Map<string, Promise<boolean>>();

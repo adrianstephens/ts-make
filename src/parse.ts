@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
-import { VariablesClass, VariableValue, Variables, Expander, Function, fromWords, toWords, anchored, _wildRe, scanBalanced, defaultFunctions, unescape } from './variables';
+import { VariablesClass, VariableValue, Variables, Expander, Function, fromWords, toWords, anchored, escapeRe, scanBalanced, defaultFunctions, unescape } from './variables';
+import { execute, ExecuteOptions } from './run';
 
 //Automatic variables
 //--------------------------
@@ -58,16 +59,23 @@ import { VariablesClass, VariableValue, Variables, Expander, Function, fromWords
 //oneshell			x		Supports the .ONESHELL special target
 //order-only		x		Supports order-only prerequisites
 //output-sync				Supports the --output-sync command line option
-//second-expansion			Supports secondary expansion of prerequisite lists
-//shell-export				Supports exporting make variables to shell functions
+//second-expansion	x		Supports secondary expansion of prerequisite lists
+//shell-export		x		Supports exporting make variables to shell functions
 //shortest-stem		x		Uses the “shortest stem” method of choosing which pattern, of multiple applicable options, will be used
 //target-specific	x		Supports target-specific and pattern-specific variable assignments
 //undefine			x		Supports the undefine directive
+
+export interface SuffixRule {
+	from:	string;
+	to:		string;
+	recipe:	string[];
+}
 
 export interface ParseOptions {
 	variables?:		Record<string, VariableValue>;
 	functions?:		Record<string, Function>;
 	includeDirs?:	string[];
+	suffixRules?:	SuffixRule[];
 	nmake?:			boolean;
 }
 
@@ -169,23 +177,32 @@ async function doConditional(exp: Expander, condition: ConditionalLine): Promise
 //-----------------------------------------------------------------------------
 
 //const suffixes = ['out', 'a', 'ln', 'o', 'c', 'cc', 'C', 'cpp', 'p', 'f', 'F', 'm', 'r', 'y', 'l', 'ym', 'lm', 's', 'S', 'mod', 'sym', 'def', 'h', 'info', 'dvi', 'tex', 'texinfo', 'texi', 'txinfo', 'w', 'ch', 'web', 'sh', 'elc', 'el'];
-const features = 'else-if extra-prereqs grouped-target oneshell order-only shortest-stem target-specific undefine';
-/*
-async function expandRule(r: RuleEntry, expander: Expander): Promise<Rule> {
-	const [targets,  prerequisites, orderOnly] = await mapAsync([r.targets,  r.prerequisites, r.orderOnly],
-		async (arr: string[]) => (await mapAsync(arr, async s => toWords(await expander.expand(s)))).flat()
-	);
-	return {targets, prerequisites, orderOnly, recipe: r.recipe};
-}
-*/
+const features = 'else-if extra-prereqs grouped-target oneshell order-only second-expansion shell-export shortest-stem target-specific undefine';
 
 function assignIfExists<T extends object, K extends keyof T>(obj: T | undefined, key: K, value: T[K]) {
 	if (obj)
 		obj[key] = value;
 }
 
-export class Makefile extends VariablesClass {
-//	exports:		string[]					= [];
+const dotNames = [
+//	'LIBPATTERNS',
+	'DEFAULT_GOAL',
+	'RECIPEPREFIX',
+	'VARIABLES',
+	'FEATURES',
+	'INCLUDE_DIRS',
+] as const;
+
+const plainNames = [
+	'VPATH',
+	'SUFFIXES',
+] as const;
+
+type BuiltinVar = typeof dotNames[number] | typeof plainNames[number];
+type BuiltinVars = { [K in BuiltinVar]: string };
+
+
+export class Makefile extends VariablesClass implements BuiltinVars {
 	rules:			RuleEntry[]					= [];
 	scopes:			Record<string, Variables>	= {};
 
@@ -197,31 +214,62 @@ export class Makefile extends VariablesClass {
 	
 	export_all		= false;
 	default_goal	= '';
-	suffixes: string[]	= [];
+	suffixes		= new Set<string>();
+	defaultGoal		= '';
+	recipeRe		= /^(?:\t| {4})/;
 
-	constructor(variables: Record<string,VariableValue>, functions: Record<string,Function>) {
+	set RECIPEPREFIX(val: string)	{
+		this.recipeRe	= val ? new RegExp('^' + escapeRe(val[0])) : /^(?:\t| {4})/;
+	}
+	get VARIABLES()		{ return fromWords(Array.from(this.variables.keys())); }
+	get FEATURES()		{ return features; }
+	get INCLUDE_DIRS()	{ return fromWords(this.includeDirs); }
+	get VPATH()			{ return fromWords(this.vpathAll); }
+	get SUFFIXES()		{ return fromWords(Array.from(this.suffixes).map(s => '.' + s)); }
+	get DEFAULT_GOAL()	{
+		if (!this.default_goal) {
+			this.default_goal = this.rules.find(r => !r.targets[0].startsWith('.'))?.targets[0] ?? '';
+		}
+		return this.default_goal;
+	}
+	set DEFAULT_GOAL(val)	{ this.default_goal = val; }
+
+	makeBuiltinValue(name: BuiltinVar) {
+		const desc	= Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), name)!;
+		const v = {builtin: true};
+		Object.defineProperty(v, 'value', { get: desc.get?.bind(this), set: desc.set?.bind(this) });
+		return v as VariableValue;
+	}
+
+	constructor(variables: Record<string,VariableValue>, functions: Record<string,Function>, suffixRules: SuffixRule[]) {
 		super(new Map(Object.entries(variables)), functions);
-		const me = this;
-		this.variables.set('.FEATURES', 	{ value: features });
-		this.variables.set('.SUFFIXES', 	{ value: this.suffixes.map(s => '.' + s).join(' ') });
-		this.variables.set('.INCLUDE_DIRS', { get value() { return fromWords(me.includeDirs); } });
-		this.variables.set('.VPATH', 		{ get value() { return fromWords(me.vpathAll); } });
-		this.variables.set('.DEFAULT_GOAL', {
-			get value() 	{
-				if (!me.default_goal) {
-					me.default_goal = me.rules.find(r => !r.targets[0].startsWith('.'))?.targets[0] ?? '';
-				}
-				return me.default_goal;
-			},
-			set value(val)	{ me.default_goal = val; }
-		});
+
+		suffixRules.forEach(rule => this.addSuffixRule(rule.from, rule.to, rule.recipe));
+
+		for (const i of dotNames)
+			this.variables.set('.' + i, this.makeBuiltinValue(i));
+		for (const i of plainNames)
+			this.variables.set(i, this.makeBuiltinValue(i));
 
 		this.includeDirs.push(
 			this.variables.get('CURDIR')!.value
 		);
 
-		this.setFunction('shell',	(_exp, command: string) => this.shellCommand(command));
 		this.setFunction('eval',	(_exp, commands: string) => this.parse(commands).then(() => ''));
+		this.setFunction('shell',	async (_exp, command: string) => new Promise<string>((resolve, reject) => child_process.exec(command, {
+				cwd:		this.cwd(),
+				shell:		this.shell(),
+				encoding:	'utf8' as const,
+				windowsHide: true,
+				maxBuffer:	10 * 1024 * 1024
+			}, (error: any, stdout: string, _stderr: string) => {
+				const code = typeof error?.code === 'number' ? error.code : 0;
+				this.variables.set('.SHELLEXIT', { value: String(code) });
+				if (error)
+					return reject(error);
+				resolve(stdout.replace(/\r?\n/g, ' ').trim());
+			})
+		));
 	}
 
 	setFunction(name: string, fn: Function) {
@@ -237,31 +285,12 @@ export class Makefile extends VariablesClass {
 			: (this.get('SHELL')?.value || '/bin/sh');
 	}
 
-	async shellCommand(command: string): Promise<string> {
-		const opts = {
-			cwd:		this.cwd(),
-			shell:		this.shell(),
-			encoding:	'utf8' as const,
-			windowsHide: true,
-			maxBuffer:	10 * 1024 * 1024
-		};
-		return await new Promise<string>((resolve, reject) =>
-			child_process.exec(command, opts, (error: any, stdout: string, _stderr: string) => {
-				const code = typeof error?.code === 'number' ? error.code : 0;
-				this.variables.set('.SHELLEXIT', { value: String(code) });
-				if (error)
-					return reject(error);
-				resolve(stdout.replace(/\r?\n/g, ' ').trim());
-			})
-		);
-	}
-
 	isSuffix(name: string): boolean {
-		return this.suffixes.includes(name);
+		return this.suffixes.has(name);
 	}
 
 	addSuffixRule(from: string, to:string, recipe: string[]) {
-		this.suffixes.push(from, to);
+		this.suffixes.add(from).add(to);
 		this.rules.push({ targets: [`%.${to}`], prerequisites: [`%.${from}`], orderOnly: [], recipe });
 	}
 
@@ -315,12 +344,11 @@ export class Makefile extends VariablesClass {
 	async parse(text: string, file = '') {
 		const lines		= text.split(/\r?\n/);
 		const L			= lines.length;
-		const recipeRe	= /^(?:\t| {4})/;
 
 		const setVariable = async (args: VariableAssignment, scope?: Variables) => this.setVariable(
 			args.name,
-			args.op === '!' || !args.op ? '' : args.op,
-			args.op === '!' ? await this.shellCommand(args.value ?? '') : args.value ?? '',
+			args.op ?? '',
+			args.value ?? '',
 			args.prefix.includes('override') ? 'override' : 'file',
 			scope,
 			args.prefix.includes('private')
@@ -346,20 +374,19 @@ export class Makefile extends VariablesClass {
 		function readDefine(assign: VariableAssignment, i: number) {
 			while (i < L) {
 				const line = lines[++i];
-				if (line === 'endef')
+				if (line.trim() === 'endef')
 					break;
 				assign.value += line + '\n';
 			}
 			return i;
 		}
 
-		let ifdepth = 0;
-		for (let i = 0; i < L; i++) {
+		for (let i = 0, ifdepth = 0; i < L; i++) {
 			const lineNo = i + 1;
 
 			try {
 				// Recipe line: starts with TAB => belongs to previous rule
-				if (recipeRe.test(lines[i])) {
+				if (this.recipeRe.test(lines[i])) {
 					if (this.rules.length)
 						this.rules.at(-1)!.recipe.push(lines[i].trim());
 					continue;
@@ -475,7 +502,7 @@ export class Makefile extends VariablesClass {
 								if (parts.length < 2) {
 									delete this.vpath[args];
 								} else {
-									this.vpath[parts[0]] = { re: anchored(_wildRe(parts[0], '.*?')), paths: parts.slice(1) };
+									this.vpath[parts[0]] = { re: anchored(escapeRe(parts[0]).replace('%', '.*?')), paths: parts.slice(1) };
 								}
 							}
 							break;
@@ -515,9 +542,9 @@ export class Makefile extends VariablesClass {
 						if ('.SUFFIXES' in targets) {
 							// Handle .SUFFIXES special case
 							if (prerequisites.length == 0)
-								this.suffixes = [];
+								this.suffixes.clear();
 							else
-								this.suffixes.push(...prerequisites);
+								prerequisites.forEach(suffix => this.suffixes.add(suffix));
 
 						} else {
 							// convert (old fashioned) suffix rule
@@ -557,8 +584,16 @@ export class Makefile extends VariablesClass {
 		}
 	}
 
+	execute(goals: string[] = [], options?: ExecuteOptions): Promise<boolean> {
+		return execute(this, goals, options);
+	}
+
 	static async parse(text: string, options?: ParseOptions): Promise<Makefile> {
-		const m	= new Makefile(options?.variables ?? {}, options?.functions ? {...defaultFunctions, ...options.functions} : defaultFunctions);
+		const m	= new Makefile(
+			options?.variables ?? {},
+			options?.functions ? {...defaultFunctions, ...options.functions} : defaultFunctions,
+			options?.suffixRules ?? []
+		);
 		if (options?.includeDirs)
 			m.includeDirs.push(...options.includeDirs);
 		await m.parse(text);
