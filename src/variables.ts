@@ -8,6 +8,7 @@ export interface VariableValue {
 	origin?: 		VariableOrigin;
 	recurse?:		boolean;
 	priv?:			boolean;
+	export?:		boolean;
 };
 
 export type Variables = Map<string, VariableValue>;
@@ -17,6 +18,7 @@ export interface Expander {
 	get(name: string): VariableValue | undefined;
 	with(context: Record<string, VariableValue> | Map<string, VariableValue> | undefined): Expander;
 	withoutPrivate(): Expander;
+	exports(all: boolean): Record<string, string>;
 }
 
 export interface Function {
@@ -414,6 +416,12 @@ export class ExpanderClass implements Expander {
 			this.functions, this.depth
 		);
 	}
+	
+	exports(all: boolean) {
+		const exp = all ? [...this.variables.entries()] : [...this.variables.entries()].filter(([, value]) => value.export);
+		return Object.fromEntries(exp.map(([k, v]) => [k, v.value]));
+	}
+
 }
 
 //-----------------------------------------------------------------------------

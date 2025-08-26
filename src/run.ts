@@ -6,8 +6,25 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 
+
+export type ExecutionMode = 'normal' | 'dry-run' | 'question' | 'touch';
+
+export interface ExecuteOptions {
+	jobs?: number;
+	mode?: ExecutionMode;
+	ignoreErrors?: boolean;
+	silent?: boolean;
+	noSilent?: boolean;
+	oneshell?: boolean;
+	output?: (text: string) => void;
+}
+
 async function mapAsync<T, U>(arr: T[], fn: (arg: T) => Promise<U>): Promise<U[]> {
 	return Promise.all(arr.map(fn));
+}
+
+function unique<T>(array: T[]) {
+	return [...new Set(array)];
 }
 
 type PatternTable<T> = {re: RegExp, value: T}[];
@@ -17,7 +34,32 @@ interface Rule {
 	prerequisites:	string[];
 	orderOnly:		string[];
 	recipe:			string[];
+	stem?:			string;
+	all?:			boolean;
 }
+//Special Built-in Target Names
+const specialTargetNames = [
+	'PHONY',
+	'SUFFIXES',
+	'DEFAULT',
+	'PRECIOUS',
+	'INTERMEDIATE',
+	'NOTINTERMEDIATE',
+	'SECONDARY',
+	'SECONDEXPANSION',
+	'DELETE_ON_ERROR',
+	'IGNORE',
+	'LOW_RESOLUTION_TIME',
+	'SILENT',
+	'EXPORT_ALL_VARIABLES',
+	'NOTPARALLEL',
+	'ONESHELL',
+	'POSIX'
+];
+
+const Universal = {
+	has(_x: string) { return true; }
+};
 
 class Rules {
 	exactRules:		Record<string, Rule|Rule[]>	= {};
@@ -27,9 +69,10 @@ class Rules {
 
 	// get special targets
 	specialTargets() {
-		return Object.fromEntries(specialTargetNames.map(name => [name,
-			new Set((this.exactRules['.' + name] as (Rule|undefined))?.prerequisites)
-		]));
+		return Object.fromEntries(specialTargetNames.map(name => {
+			const rule = this.exactRules['.' + name] as Rule|undefined;
+			return [name, rule?.all ? Universal : new Set(rule?.prerequisites)];
+		}));
 	}
 
 	async prepare(rules: RuleEntry[], scopes: Record<string, Variables>, expander: Expander) {
@@ -72,6 +115,8 @@ class Rules {
 							if (r2.recipe.length > 0)
 								dest.recipe = r2.recipe;
 						}
+						if (prerequisites.length == 0)
+							(this.exactRules[t] as Rule).all = true;
 					}
 				}
 			}
@@ -113,6 +158,7 @@ class Rules {
 				prerequisites:	fixPercent(bestrecipe.prerequisites, beststem),
 				orderOnly: 		fixPercent(bestrecipe.orderOnly, beststem),
 				recipe:			bestrecipe.recipe,
+				stem:			beststem,
 			};
 		}
 
@@ -123,6 +169,7 @@ class Rules {
 					prerequisites:	[...r.prerequisites, ...prerequisites],
 					orderOnly:		[...new Set([...r.orderOnly, ...orderOnly])],
 					recipe:			r.recipe,
+					stem:			'',
 				}));
 			}
 			if (exact.recipe.length === 0) {
@@ -138,14 +185,16 @@ class Rules {
 				prerequisites:	[...bestrecipe.prerequisites, ...prerequisites],
 				orderOnly:		[...new Set([...bestrecipe.orderOnly, ...orderOnly])],
 				recipe:			bestrecipe.recipe,
-			};
-		} else {
-			return {
-				prerequisites,
-				orderOnly,
-				recipe: [],
+				stem:			beststem,
 			};
 		}
+
+		return {
+			prerequisites,
+			orderOnly,
+			recipe: (this.exactRules['.DEFAULT'] as Rule|undefined)?.recipe ?? [],
+			stem: '',
+		};
 	}	
 
 	getScope(target: string): Variables | undefined {
@@ -168,43 +217,8 @@ class Rules {
 		}
 		return bestvalue;
 	}
-
-	defaultGoal() {
-		return Object.keys(this.exactRules).find(target => !target.startsWith('.'));
-	}
 }
 
-//Special Built-in Target Names
-const specialTargetNames = [
-	'PHONY',
-	'SUFFIXES',
-	'DEFAULT',
-	'PRECIOUS',
-	'INTERMEDIATE',
-	'NOTINTERMEDIATE',
-	'SECONDARY',
-	'SECONDEXPANSION',
-	'DELETE_ON_ERROR',
-	'IGNORE',
-	'LOW_RESOLUTION_TIME',
-	'SILENT',
-	'EXPORT_ALL_VARIABLES',
-	'NOTPARALLEL',
-	'ONESHELL',
-	'POSIX'
-];
-
-export type ExecutionMode = 'normal' | 'dry-run' | 'question' | 'touch';
-
-export interface ExecuteOptions {
-	jobs?: number;
-	mode?: ExecutionMode;
-	ignoreErrors?: boolean;
-	silent?: boolean;
-	noSilent?: boolean;
-	oneshell?: boolean;
-	output?: (text: string) => void;
-}
 
 interface Lock {
 	release(): void;
@@ -331,7 +345,7 @@ async function runRecipe(recipe: string[], exp: Expander, opt: ExecuteOptions2, 
 				opt.output!(cmd + '\r\n');
 
 			if (cmd && (opt.mode === 'normal' || c.force)) {
-				const ignore = !opt.ignoreErrors && !c.ignore;
+				const ignore = opt.ignoreErrors || c.ignore;
 				await new Promise<number>((resolve, reject) => echo(
 					child_process.spawn(cmd, [], spawnOpts)
 					.on('error', err => reject(err))
@@ -347,7 +361,13 @@ function mapSet<K, V>(map: Map<K, V>, k: K, v: V): V {
 	return v;
 }
 
-export async function execute(make: Makefile, goals: string[] = [], opt: ExecuteOptions = {}): Promise<void> {
+async function touchFile(abs: string) {
+	await fs.promises.mkdir(path.dirname(abs), { recursive: true }).catch(() => {});
+	await fs.promises.open(abs, 'a').then(f => f.close()).catch(() => {});
+	await fs.promises.utimes(abs, new Date(), new Date()).catch(() => {});
+}
+
+export async function execute(make: Makefile, goals: string[] = [], opt: ExecuteOptions = {}): Promise<boolean> {
 	opt = {
 		mode: 'normal' as const,
 		jobs: 1,
@@ -356,17 +376,18 @@ export async function execute(make: Makefile, goals: string[] = [], opt: Execute
 	};
 	const cwd = make.cwd();
 
-	const spawnOpts = {
+	const spawnOpts: child_process.SpawnOptions = {
 		cwd,
 		shell:		make.shell(),
-		encoding:	'utf8' as const,
 		windowsHide: true,
 	};
 
 	const ruler		= new Rules;
 	await ruler.prepare(make.rules, make.scopes, make);
 	const special	= ruler.specialTargets();
+	const exportAll = make.export_all;
 
+	// Cache stat results for this execute() pass
 	const statCache = new Map<string, Promise<number>>();
 	async function statCached(abs: string): Promise<number> {
 		return statCache.get(abs) ?? mapSet(statCache, abs, fs.promises.stat(abs).then(s => s.mtimeMs).catch(() => 0));
@@ -385,6 +406,10 @@ export async function execute(make: Makefile, goals: string[] = [], opt: Execute
 	}
 	function clearPathCache() {
 		pathCache.clear();
+	}
+
+	function relative(filename: string): string {
+		return path.relative(cwd, filename);
 	}
 
 	const visited = new Map<string, Promise<boolean>>();
@@ -437,52 +462,99 @@ export async function execute(make: Makefile, goals: string[] = [], opt: Execute
 
 		const scopeNoPriv	= scope.withoutPrivate();
 
-		const prerequisites	= await mapAsync(r.prerequisites, getPath);
-		const extraPrereqs	= extra ? await mapAsync(toWords(extra.value), getPath) : [];
-		const orderOnly		= await mapAsync(r.orderOnly, getPath);
-		const allPrereqs	= [...new Set([...prerequisites, ...extraPrereqs])];
+		// First-pass expansion results from prepare()
+        let wordsP = r.prerequisites;
+        let wordsO = r.orderOnly;
 
-		// process waiting prerequisites
-		let i = 0;
-		let wait: number;
-		while ((wait = prerequisites.indexOf('.WAIT', i)) >= 0) {
-			await mapAsync(prerequisites.slice(i, wait), pre => buildTarget(pre, scopeNoPriv));
-			i = wait + 1;
+        // .SECONDEXPANSION: apply second pass over the first-pass words, with $@/$* set
+        if (special.SECONDEXPANSION.has(target)) {
+            const exp2 = scope.with({
+                '@': { value: target,       origin: 'automatic' },
+                '*': { value: r.stem ?? '', origin: 'automatic' },
+            });
+			wordsP = toWords(await exp2.expand(fromWords(wordsP)));
+			wordsO = toWords(await exp2.expand(fromWords(wordsO)));
+        }
+
+        // Resolve to paths after choosing the expansion path
+        const prerequisites = await mapAsync(wordsP, getPath);
+        const orderOnly     = await mapAsync(wordsO, getPath);
+		const extraPrereqs	= extra ? await mapAsync(toWords(extra.value), getPath) : [];
+		const uniquePrereqs	= unique(prerequisites);
+
+		const stopOnRebuild = opt.mode === 'question';
+		if (special.NOTPARALLEL.has(target)) {
+			for (const i of uniquePrereqs) {
+				if (await buildTarget(i, scopeNoPriv) && stopOnRebuild)
+					return true;
+			}
+
+		} else if (prerequisites.indexOf('.WAIT') >= 0) {
+			let i = 0;
+			let wait: number;
+			while ((wait = prerequisites.indexOf('.WAIT', i)) >= 0) {
+				if ((await mapAsync(prerequisites.slice(i, wait), pre => buildTarget(pre, scopeNoPriv))).some(Boolean) && stopOnRebuild)
+					return true;
+				i = wait + 1;
+			}
+			if ((await mapAsync(unique([...prerequisites.slice(i), ...extraPrereqs, ...orderOnly]), pre => buildTarget(pre, scopeNoPriv))).some(Boolean) && stopOnRebuild)
+				return true;
+
+		} else {
+			if ((await mapAsync(unique([...uniquePrereqs, ...extraPrereqs, ...orderOnly]), pre => buildTarget(pre, scopeNoPriv))).some(Boolean) && stopOnRebuild)
+				return true;
 		}
 
-		// Recurse prereqs
-		/*const rebuiltDep	= */(await mapAsync([...allPrereqs, ...orderOnly], pre => buildTarget(pre, scopeNoPriv))).some(Boolean);
 
 		if (r.recipe.length) {
-			const targetTimes	= await mapAsync(r.targets ?? [target], async t => special.PHONY.has(t) ? 0 : await modTime2(t));
+			const targets 		= r.targets ?? [target];
+			const targetTimes	= await mapAsync(targets, async t => special.PHONY.has(t) ? 0 : await modTime2(t));
 			const mtime			= Math.min(...targetTimes);
 
-			if (!mtime || (await mapAsync(allPrereqs, modTime2)).some(t => t > mtime)) {
+			if (!mtime || (await mapAsync(unique([...uniquePrereqs, ...extraPrereqs]), modTime2)).some(t => t > mtime)) {
 				const oldest = targetTimes.reduce((a, b) => a === 0 || b < a ? b : a, 0);
-				const older	= oldest ? await mapAsync(prerequisites, async p => await modTime2(p) > oldest ? p : '') : prerequisites;
+				const older	= oldest ? await mapAsync(uniquePrereqs, async p => await modTime2(p) > oldest ? p : '') : uniquePrereqs;
 
-				// Set automatic variables for make target
-				const exp = scope.with({
-					'@': {value: target, 						origin: 'automatic'},
-					'<': {value: prerequisites[0], 				origin: 'automatic'},
-					'^': {value: fromWords(prerequisites),		origin: 'automatic'},
-					'+': {value: fromWords(r.prerequisites),	origin: 'automatic'},
-					'|': {value: fromWords(orderOnly), 			origin: 'automatic'},
-					'?': {value: fromWords(older),				origin: 'automatic'},
-				});
+				if (opt.mode === 'dry-run' || opt.mode === 'normal') {
+					// Set automatic variables for make target
+					const exp = scope.with({
+						'@': {value: target, 								origin: 'automatic'},
+						'<': {value: relative(uniquePrereqs[0]), 			origin: 'automatic'},
+						'^': {value: fromWords(uniquePrereqs.map(relative)),origin: 'automatic'},
+						'+': {value: fromWords(r.prerequisites),			origin: 'automatic'},
+						'|': {value: fromWords(orderOnly.map(relative)), 	origin: 'automatic'},
+						'?': {value: fromWords(older.map(relative)),		origin: 'automatic'},
+						'*': {value: r.stem ?? '',							origin: 'automatic'},
+					});
 
-				const lock = await semaphore.acquire();
-				try {
-					await runRecipe(r.recipe, exp, {...opt,
-						ignoreErrors:	opt.ignoreErrors || special.IGNORE.has(target),
-						silent:			opt.silent || special.SILENT.has(target),
-						oneshell:		opt.oneshell || special.ONESHELL.has(target),
-					}, spawnOpts);
-					clearStatCache();
-					clearPathCache();
+					const lock = await semaphore.acquire();
+					try {
+						await runRecipe(r.recipe, exp, {...opt,
+							ignoreErrors:	opt.ignoreErrors || special.IGNORE.has(target),
+							silent:			opt.silent || special.SILENT.has(target),
+							oneshell:		opt.oneshell || special.ONESHELL.has(target),
+						}, {
+							...spawnOpts,
+							env: {...process.env, ...scope.exports(exportAll) },
+						});
+						clearStatCache();
+						clearPathCache();
+  					
+					} catch (err) {
+                        // .DELETE_ON_ERROR: remove targets on failure unless PRECIOUS/SECONDARY
+                        if (special.DELETE_ON_ERROR.has(target) && !special.PRECIOUS.has(target) && !special.SECONDARY.has(target)) {
+                            await Promise.allSettled(
+                                targets.map(t => fs.promises.unlink(path.resolve(cwd, t)))
+                            );
+                        }
+                        throw err;
 
-				} finally {
-					lock.release();
+					} finally {
+						lock.release();
+					}
+
+				} else if (opt.mode === 'touch') {
+					await Promise.all(targets.map(t => touchFile(path.resolve(cwd, t))));
 				}
 				return true;
 			}
@@ -498,7 +570,7 @@ export async function execute(make: Makefile, goals: string[] = [], opt: Execute
 	}
 
 	if (goals.length === 0)
-		goals.push(ruler.defaultGoal() ?? ''); // Default goal
+		goals.push(make.get('.DEFAULT_GOAL')!.value);
 
-	await mapAsync(goals, g => make.getPath(g).then(g => buildTarget(g, make)));
+	return (await mapAsync(goals, g => make.getPath(g).then(g => buildTarget(g, make)))).some(Boolean);
 }

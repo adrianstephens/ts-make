@@ -67,6 +67,7 @@ import { VariablesClass, VariableValue, Variables, Expander, Function, fromWords
 export interface ParseOptions {
 	variables?:		Record<string, VariableValue>;
 	functions?:		Record<string, Function>;
+	includeDirs?:	string[];
 	nmake?:			boolean;
 }
 
@@ -75,10 +76,10 @@ export interface RuleEntry {
 	prerequisites:	string[];
 	orderOnly:		string[];
 	recipe:			string[];
-	file:			string;
-	lineNo:			number;		// line of the rule header (1-based)
-	doubleColon:	boolean;	// true if the rule is a double-colon rule
-	grouped:		boolean;	// true if the rule is a grouped rule
+	file?:			string;
+	lineNo?:		number;		// line of the rule header (1-based)
+	doubleColon?:	boolean;	// true if the rule is a double-colon rule
+	grouped?:		boolean;	// true if the rule is a grouped rule
 }
 
 export interface DeferredInclude {
@@ -167,7 +168,7 @@ async function doConditional(exp: Expander, condition: ConditionalLine): Promise
 // Makefile
 //-----------------------------------------------------------------------------
 
-const suffixes = ['out', 'a', 'ln', 'o', 'c', 'cc', 'C', 'cpp', 'p', 'f', 'F', 'm', 'r', 'y', 'l', 'ym', 'lm', 's', 'S', 'mod', 'sym', 'def', 'h', 'info', 'dvi', 'tex', 'texinfo', 'texi', 'txinfo', 'w', 'ch', 'web', 'sh', 'elc', 'el'];
+//const suffixes = ['out', 'a', 'ln', 'o', 'c', 'cc', 'C', 'cpp', 'p', 'f', 'F', 'm', 'r', 'y', 'l', 'ym', 'lm', 's', 'S', 'mod', 'sym', 'def', 'h', 'info', 'dvi', 'tex', 'texinfo', 'texi', 'txinfo', 'w', 'ch', 'web', 'sh', 'elc', 'el'];
 const features = 'else-if extra-prereqs grouped-target oneshell order-only shortest-stem target-specific undefine';
 /*
 async function expandRule(r: RuleEntry, expander: Expander): Promise<Rule> {
@@ -178,8 +179,13 @@ async function expandRule(r: RuleEntry, expander: Expander): Promise<Rule> {
 }
 */
 
+function assignIfExists<T extends object, K extends keyof T>(obj: T | undefined, key: K, value: T[K]) {
+	if (obj)
+		obj[key] = value;
+}
+
 export class Makefile extends VariablesClass {
-	exports:		string[]					= [];
+//	exports:		string[]					= [];
 	rules:			RuleEntry[]					= [];
 	scopes:			Record<string, Variables>	= {};
 
@@ -188,8 +194,10 @@ export class Makefile extends VariablesClass {
 	includeDirs:	string[]					= [];
 
 	deferredIncludes:	DeferredInclude[]		= [];
-
-	suffixes	= suffixes;
+	
+	export_all		= false;
+	default_goal	= '';
+	suffixes: string[]	= [];
 
 	constructor(variables: Record<string,VariableValue>, functions: Record<string,Function>) {
 		super(new Map(Object.entries(variables)), functions);
@@ -198,6 +206,15 @@ export class Makefile extends VariablesClass {
 		this.variables.set('.SUFFIXES', 	{ value: this.suffixes.map(s => '.' + s).join(' ') });
 		this.variables.set('.INCLUDE_DIRS', { get value() { return fromWords(me.includeDirs); } });
 		this.variables.set('.VPATH', 		{ get value() { return fromWords(me.vpathAll); } });
+		this.variables.set('.DEFAULT_GOAL', {
+			get value() 	{
+				if (!me.default_goal) {
+					me.default_goal = me.rules.find(r => !r.targets[0].startsWith('.'))?.targets[0] ?? '';
+				}
+				return me.default_goal;
+			},
+			set value(val)	{ me.default_goal = val; }
+		});
 
 		this.includeDirs.push(
 			this.variables.get('CURDIR')!.value
@@ -241,6 +258,11 @@ export class Makefile extends VariablesClass {
 
 	isSuffix(name: string): boolean {
 		return this.suffixes.includes(name);
+	}
+
+	addSuffixRule(from: string, to:string, recipe: string[]) {
+		this.suffixes.push(from, to);
+		this.rules.push({ targets: [`%.${to}`], prerequisites: [`%.${from}`], orderOnly: [], recipe });
 	}
 
 	async getPath(target: string) {
@@ -323,7 +345,7 @@ export class Makefile extends VariablesClass {
 
 		function readDefine(assign: VariableAssignment, i: number) {
 			while (i < L) {
-				const line = lines[++i].trim();
+				const line = lines[++i];
 				if (line === 'endef')
 					break;
 				assign.value += line + '\n';
@@ -421,21 +443,25 @@ export class Makefile extends VariablesClass {
 								if (assign.define)
 									i = readDefine(assign, i);
 								await setVariable(assign);
-								this.exports.push(assign.name);
+								assignIfExists(this.variables.get(assign.name), 'export', true);
 							} else {
-								const vars = args.split(/\s+/);
-								if (vars.length) {
-									this.exports.push(...vars);
-								} else {
-									// If no parts, export all variables
-									this.exports.push('*');
-								}
+								const vars = toWords(args);
+								if (vars.length)
+									vars.forEach(name => assignIfExists(this.variables.get(name), 'export', true));
+								else
+									this.export_all = true;
 							}
 							break;
 						}
 
-						case 'unexport':
+						case 'unexport': {
+							const vars = toWords(args);
+							if (vars.length)
+								vars.forEach(name => assignIfExists(this.variables.get(name), 'export', false));
+							else
+								this.export_all = false;
 							break;
+						}
 
 						case 'undefine':
 							this.variables.delete(args);
@@ -482,6 +508,9 @@ export class Makefile extends VariablesClass {
 						}
 						const semi = right.indexOf(';');
 						const prerequisites = toWords(semi >= 0 ? right.slice(0, semi) : right);
+
+						if ('.EXPORT_ALL_VARIABLES' in targets)
+							this.export_all = true;
 
 						if ('.SUFFIXES' in targets) {
 							// Handle .SUFFIXES special case
@@ -530,6 +559,8 @@ export class Makefile extends VariablesClass {
 
 	static async parse(text: string, options?: ParseOptions): Promise<Makefile> {
 		const m	= new Makefile(options?.variables ?? {}, options?.functions ? {...defaultFunctions, ...options.functions} : defaultFunctions);
+		if (options?.includeDirs)
+			m.includeDirs.push(...options.includeDirs);
 		await m.parse(text);
 		return m;
 	}
