@@ -67,7 +67,7 @@ import { execute, ExecuteOptions } from './run';
 
 export interface SuffixRule {
 	from:	string;
-	to:		string;
+	to?:	string;
 	recipe:	string[];
 }
 
@@ -80,9 +80,9 @@ export interface ParseOptions {
 }
 
 export interface RuleEntry {
-	targets:		string[];
-	prerequisites:	string[];
-	orderOnly:		string[];
+	targets:		string;//[];
+	prerequisites:	string;//[];
+//	orderOnly:		string[];
 	recipe:			string[];
 	file?:			string;
 	lineNo?:		number;		// line of the rule header (1-based)
@@ -179,6 +179,17 @@ async function doConditional(exp: Expander, condition: ConditionalLine): Promise
 //const suffixes = ['out', 'a', 'ln', 'o', 'c', 'cc', 'C', 'cpp', 'p', 'f', 'F', 'm', 'r', 'y', 'l', 'ym', 'lm', 's', 'S', 'mod', 'sym', 'def', 'h', 'info', 'dvi', 'tex', 'texinfo', 'texi', 'txinfo', 'w', 'ch', 'web', 'sh', 'elc', 'el'];
 const features = 'else-if extra-prereqs grouped-target oneshell order-only second-expansion shell-export shortest-stem target-specific undefine';
 
+const directives = ['include', 'sinclude', '-include', 'define', 'endef', 'ifdef', 'ifndef', 'ifeq', 'ifneq', 'else', 'endif', 'export', 'unexport', 'undefine', 'vpath'] as const;
+const directiveRe = new RegExp(`^(${directives.join('|')})(?:\\s+(.*))?$`);
+
+type Directive = typeof directives[number];
+
+function isDirective(line: string): {command: Directive, args: string}|undefined {
+	const match = line.match(directiveRe);
+	if (match)
+		return { command: match[1] as Directive, args: match[2] || '' };
+}
+
 function assignIfExists<T extends object, K extends keyof T>(obj: T | undefined, key: K, value: T[K]) {
 	if (obj)
 		obj[key] = value;
@@ -212,10 +223,9 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 
 	deferredIncludes:	DeferredInclude[]		= [];
 	
-	export_all		= false;
-	default_goal	= '';
-	suffixes		= new Set<string>();
+	exportAll		= false;
 	defaultGoal		= '';
+	suffixes		= new Set<string>();
 	recipeRe		= /^(?:\t| {4})/;
 
 	set RECIPEPREFIX(val: string)	{
@@ -227,12 +237,12 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 	get VPATH()			{ return fromWords(this.vpathAll); }
 	get SUFFIXES()		{ return fromWords(Array.from(this.suffixes).map(s => '.' + s)); }
 	get DEFAULT_GOAL()	{
-		if (!this.default_goal) {
-			this.default_goal = this.rules.find(r => !r.targets[0].startsWith('.'))?.targets[0] ?? '';
+		if (!this.defaultGoal) {
+			this.defaultGoal = this.rules.find(r => !r.targets[0].startsWith('.'))?.targets[0] ?? '';
 		}
-		return this.default_goal;
+		return this.defaultGoal;
 	}
-	set DEFAULT_GOAL(val)	{ this.default_goal = val; }
+	set DEFAULT_GOAL(val)	{ this.defaultGoal = val; }
 
 	makeBuiltinValue(name: BuiltinVar) {
 		const desc	= Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), name)!;
@@ -289,9 +299,11 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 		return this.suffixes.has(name);
 	}
 
-	addSuffixRule(from: string, to:string, recipe: string[]) {
-		this.suffixes.add(from).add(to);
-		this.rules.push({ targets: [`%.${to}`], prerequisites: [`%.${from}`], orderOnly: [], recipe });
+	addSuffixRule(from: string, to: string|undefined, recipe: string[]) {
+		this.suffixes.add(from);
+		if (to)
+			this.suffixes.add(to);
+		this.rules.push({ targets: to ? `%.${to}` : '%', prerequisites: `%.${from}`, recipe });
 	}
 
 	async getPath(target: string) {
@@ -385,10 +397,10 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 			const lineNo = i + 1;
 
 			try {
-				// Recipe line: starts with TAB => belongs to previous rule
+				// Recipe line
 				if (this.recipeRe.test(lines[i])) {
 					if (this.rules.length)
-						this.rules.at(-1)!.recipe.push(lines[i].trim());
+						this.rules.at(-1)!.recipe.push(lines[i].slice(1).trim());
 					continue;
 				}
 
@@ -413,45 +425,45 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 					continue;
 				}
 
-				//conditional
-				let conditional = parseConditional(line);
-				if (conditional) {
-					ifdepth++;
-					while (conditional && !await doConditional(this, conditional)) {
-						i = skipToEndif(i, true);
-						if (!lines[i].startsWith('else')) {
-							--ifdepth;
-							break;
-						}
-						conditional = parseConditional(lines[i].slice(4).trim());
-					}
-					continue;
-				}
-
 				//directives
-				const directive = line.match(/^(-?\w+)(?:\s+([^:].*))?$/);
+				const directive = isDirective(line);//line.match(/^(-?\w+)(?:\s+([^:].*))?$/);
 				if (directive) {
-					const [, command, args] = directive;
-					let processed = true;
+					const {command, args} = directive;
 
 					switch (command) {
+						case 'ifeq':
+						case 'ifneq':
+						case 'ifdef':
+						case 'ifndef':
+							ifdepth++;
+							for (let conditional: ConditionalLine|undefined = {type: command, args};
+								conditional && !await doConditional(this, conditional);
+								conditional = parseConditional(lines[i].slice(4).trim())
+							) {
+								i = skipToEndif(i, true);
+								if (!lines[i].startsWith('else')) {
+									--ifdepth;
+									break;
+								}
+							}
+							continue;
+
 						case 'else':
 							if (ifdepth == 0)
-								console.log('Unexpected else without ifdef/ifeq/ifneq');
+								throw new Error('Unexpected else without ifdef/ifeq/ifneq');
 							else
 								i = skipToEndif(i, false);
 							break;
 
 						case 'endif':
 							if (ifdepth == 0)
-								console.log('Unexpected endif without ifdef/ifeq/ifneq');
+								throw new Error('Unexpected endif without ifdef/ifeq/ifneq');
 							else
 								--ifdepth;
 							break;
 
 						case 'endef':
-							console.log('Unexpected endef without define');
-							break;
+							throw new Error('Unexpected endef without define');
 
 						case 'sinclude':
 						case '-include':
@@ -476,7 +488,7 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 								if (vars.length)
 									vars.forEach(name => assignIfExists(this.variables.get(name), 'export', true));
 								else
-									this.export_all = true;
+									this.exportAll = true;
 							}
 							break;
 						}
@@ -486,7 +498,7 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 							if (vars.length)
 								vars.forEach(name => assignIfExists(this.variables.get(name), 'export', false));
 							else
-								this.export_all = false;
+								this.exportAll = false;
 							break;
 						}
 
@@ -507,25 +519,21 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 							}
 							break;
 
-						default:
-							processed = false;
-							break;
 					}
-					if (processed)
-						continue;
+					continue;
 				}
 
 				
 				// Rule: targets: prerequisites [; recipe]
 				const colon = scanBalanced(line, 0, ':');
 				if (colon < line.length) {
-					const group = line[colon - 1] === '&';
-					const left	= line.slice(0, group ? colon - 1 : colon).trim();
-					
+					const grouped	= line[colon - 1] === '&';
+					const left		= line.slice(0, grouped ? colon - 1 : colon).trim();
+
 					if (left) {
-						const double	= line[colon + 1] === ':';
-						const right		= line.slice(colon + (double ? 2 : 1));
-						const targets	= toWords(left);
+						const targets		= left.trim();
+						const doubleColon	= line[colon + 1] === ':';
+						const right			= line.slice(colon + (doubleColon ? 2 : 1));
 
 						// target or pattern specific variables
 						const assign 	= parseAssignment(right);
@@ -533,40 +541,39 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 							await setVariable(assign, this.scopes[left] ??= new Map<string, VariableValue>());
 							continue;
 						}
-						const semi = right.indexOf(';');
-						const prerequisites = toWords(semi >= 0 ? right.slice(0, semi) : right);
+						const semi 			= right.indexOf(';');
+						const prerequisites = (semi >= 0 ? right.slice(0, semi) : right).trim();
+						const recipe		= semi >= 0 ? [right.slice(semi + 1).trim()] : [];
 
-						if ('.EXPORT_ALL_VARIABLES' in targets)
-							this.export_all = true;
-
-						if ('.SUFFIXES' in targets) {
+						if (targets.includes('.SUFFIXES')) {
 							// Handle .SUFFIXES special case
-							if (prerequisites.length == 0)
+							if (!prerequisites)
 								this.suffixes.clear();
 							else
-								prerequisites.forEach(suffix => this.suffixes.add(suffix));
+								toWords(prerequisites).forEach(suffix => this.suffixes.add(suffix));
 
 						} else {
 							// convert (old fashioned) suffix rule
-							if (targets.length === 1 && targets[0][0] === '.' && prerequisites.length === 0) {
-								const suff = targets[0].split('.');
-								if (suff.length < 3 && (suff.length > 1 && this.isSuffix(suff[1])) && (suff.length === 2 || this.isSuffix(suff[2]))) {
-									//.c 	=>	% : %.c
-									//.c.o	=> %.o : %.c
-									prerequisites.push('%.' + suff[1]);
-									targets[0] = suff.length === 2 ? '%' : '%.' + suff[2];
+							if (!grouped && !prerequisites && !targets.includes(' ') && targets[0] === '.') {
+								const suff = targets.slice(1).split('.');
+								if (suff.length < 3 && this.isSuffix(suff[0]) && (suff.length < 2 || this.isSuffix(suff[1]))) {
+									this.rules.push({
+										targets:		suff.length < 2 ? '%' : '%.' + suff[1],
+										prerequisites:	'%.' + suff[0],
+										recipe,
+										file, lineNo,
+										doubleColon, grouped,
+									});
+									continue;
 								}
 							}
 
-							const pipe = prerequisites.indexOf('|');
 							this.rules.push({
 								targets,
-								prerequisites:	pipe >= 0 ? prerequisites.slice(0, pipe) : prerequisites,
-								orderOnly: 		pipe >= 0 ? prerequisites.slice(pipe + 1) : [],
-								recipe:			semi >= 0 ? [right.slice(semi + 1).trim()] : [],
+								prerequisites,
+								recipe,
 								file, lineNo,
-								doubleColon:	double,
-								grouped:		group,
+								doubleColon, grouped,
 							});
 						}
 
@@ -576,10 +583,13 @@ export class Makefile extends VariablesClass implements BuiltinVars {
 
 				line = await this.expand(line);
 				if (line)
-					console.log('Unrecognized line:', line, 'at', lineNo);
+					throw new Error(`Unrecognized line: ${line}`);
 
 			} catch (error: any) {
-				throw new Error(`${error.message} at line ${lineNo}`, error.options);
+				if (file)
+					throw new Error(`${error.message} at line ${lineNo} in included ${file}`, error.options);
+				else
+					throw new Error(`${error.message} at line ${lineNo}`, error.options);
 			}
 		}
 	}

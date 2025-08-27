@@ -18,7 +18,7 @@ npm install @isopodlabs/make
 ## Quick start
 
 ```ts
-import { Makefile, execute } from '@isopodlabs/make';
+import { Makefile } from '@isopodlabs/make';
 import { readFile } from 'fs/promises';
 
 async function main() {
@@ -26,7 +26,7 @@ async function main() {
   const mf = await Makefile.parse(await readFile('Makefile', 'utf8'));
 
   // Run default goal or provide explicit goals
-  const changed = await execute(mf, ['all'], {
+  const changed = await mf.execute(['all'], {
     jobs: 4,                                  // run up to 4 jobs in parallel
     mode: 'normal',                           // 'normal' | 'dry-run' | 'question' | 'touch'
     output: s => process.stdout.write(s),     // capture stdout/stderr from recipes
@@ -96,24 +96,28 @@ clean:
 - Parallelism:
   - `jobs` option to control concurrency.
   - `.NOTPARALLEL` serializes prerequisites for affected targets.
+  - `.WAIT` splits a prerequisite list into serial segments:
+    - `A: p1 p2 .WAIT p3 p4` runs p1/p2 (in parallel), then p3/p4 (in parallel).
 
 ## API
 
 Entry points are re-exported from [src/index.ts](src/index.ts).
 
 - Classes and types:
-  - [`Makefile`](src/parse.ts)
-  - [`ParseOptions`](src/parse.ts)
-  - [`Variables`](src/variables.ts)
-  - [`Expander`](src/variables.ts)
-  - [`Function`](src/variables.ts)
-- Execution:
-  - [`execute`](src/run.ts)
-  - [`ExecuteOptions`](src/run.ts)
+  - [`Makefile`](dist/parse.d.ts)
+  - [`ParseOptions`](dist/parse.d.ts)
+  - [`ExecuteOptions`](dist/run.d.ts)
 
-### Makefile
 
-Create and parse:
+### Parse options
+
+See [`ParseOptions`](dist/parse.d.ts)
+- `variables`: `Record<string, VariableValue>` an initial set of variables
+- `functions`: `Record<string, Function>` functions to override or augment the standard make functions
+- `includeDirs`: `string[]` directories to search for include files
+- `suffixRules`: `SuffixRule[]` implicit rules
+- `nmake`: `boolean` currently unused option to improve compatibility with nmake
+
 
 ```ts
 import { Makefile } from '@isopodlabs/make';
@@ -130,20 +134,11 @@ const mf2 = await Makefile.load('path/to/Makefile');
 Execution:
 
 ```ts
-import { execute } from '@isopodlabs/make';
-
-const changed = await execute(mf, ['target'], {
+const changed = await mf.execute(['target'], {
   jobs: 2,
   mode: 'question', // returns true if any rebuild would occur
   output: s => process.stdout.write(s),
 });
-```
-
-Shell integration:
-
-```ts
-// Run a shell command in the Makefile’s context (captures exit code to .SHELLEXIT)
-const out = await mf.shellCommand('echo hello && exit 0');
 ```
 
 Custom functions:
@@ -151,13 +146,6 @@ Custom functions:
 ```ts
 // Add a $(myfunc ...) expansion function
 mf.setFunction('myfunc', async (_exp, text: string) => text.toUpperCase());
-```
-
-Path resolution:
-
-```ts
-// Resolve a file using VPATH / vpath rules
-const resolved = await mf.getPath('foo.o');
 ```
 
 Suffix rules:
@@ -171,7 +159,7 @@ mf.addSuffixRule('c', 'o', [
 
 ### Execute options
 
-See [`ExecuteOptions`](src/run.ts):
+See [`ExecuteOptions`](dist/run.d.ts):
 
 - `mode`: `'normal' | 'dry-run' | 'question' | 'touch'`
 - `jobs`: number (default 1)
@@ -179,20 +167,10 @@ See [`ExecuteOptions`](src/run.ts):
 - `ignoreErrors`, `silent`, `noSilent`, `oneshell`
 - Special targets like `.SILENT`, `.ONESHELL`, `.IGNORE`, `.NOTPARALLEL` influence behavior per target (and globally if declared with no prerequisites).
 
-## Behavior notes
-
-- Grouped targets: a single recipe can build multiple outputs. They share timestamps and are scheduled as a unit.
-- Order-only prerequisites after a pipe `|` do not trigger rebuilds when they change.
-- `.WAIT` splits a prerequisite list into serial segments:
-  - `A: p1 p2 .WAIT p3 p4` runs p1/p2 (in parallel), then p3/p4 (in parallel).
-- `.ONESHELL` runs all recipe lines for a rule in a single shell; otherwise, each line runs in its own shell.
-- `.SECONDEXPANSION`: prerequisite lists are expanded twice; the second pass runs with `$@` and `$*` set.
-- Environment export: `export`, `unexport`, and `.EXPORT_ALL_VARIABLES` control which variables are passed to each recipe’s environment.
 
 ## Limitations
 
 - No archive member support (`lib.a(member.o)`, `$%`), and no jobserver.
-- No built-in implicit rule database (only what you define, plus suffix rule helpers).
+- No built-in implicit rule database - pass suffix rules to the parser.
 - Special targets with lifecycle semantics are recognized but not fully implemented: `.PRECIOUS`, `.INTERMEDIATE`, `.NOTINTERMEDIATE`, `.SECONDARY`, `.LOW_RESOLUTION_TIME`.
 - CLI flags/MAKEFLAGS are not parsed; pass options via `ExecuteOptions`.
-- `.RECIPEPREFIX` is not supported (recipes must start with TAB or four spaces).

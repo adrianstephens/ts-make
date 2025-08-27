@@ -58,7 +58,8 @@ const specialTargetNames = [
 ];
 
 const Universal = {
-	has(_x: string) { return true; }
+	size: Infinity,
+	has(_: string) { return true; },
 };
 
 class Rules {
@@ -82,9 +83,11 @@ class Rules {
 		this.patternScopes	= [];
 
 		for (const r of rules) {
-			const [targets, prerequisites, orderOnly] = await mapAsync([r.targets,  r.prerequisites, r.orderOnly],
-				async (arr: string[]) => (await mapAsync(arr, async s => toWords(await expander.expand(s)))).flat()
-			);
+			const [targets, prerequisites] = await mapAsync([r.targets,  r.prerequisites], async s => toWords(await expander.expand(s)));
+			const pipe		= prerequisites.indexOf('|');
+			const orderOnly = pipe >= 0 ? prerequisites.slice(pipe + 1) : [];
+			if (pipe >= 0)
+				prerequisites.length = pipe;
 
 			const r2: Rule = {prerequisites, orderOnly, recipe: r.recipe};
 
@@ -229,7 +232,7 @@ interface WaitingPromise {
 	reject(err?: Error): void;
 }
 
-export class Semaphore {
+class Semaphore {
 	private running = 0;
 	private waiting: WaitingPromise[] = [];
 
@@ -385,7 +388,7 @@ export async function execute(make: Makefile, goals: string[] = [], opt: Execute
 	const ruler		= new Rules;
 	await ruler.prepare(make.rules, make.scopes, make);
 	const special	= ruler.specialTargets();
-	const exportAll = make.export_all;
+	const exportAll = make.exportAll || special.EXPORT_ALL_VARIABLES.size > 0;
 
 	// Cache stat results for this execute() pass
 	const statCache = new Map<string, Promise<number>>();

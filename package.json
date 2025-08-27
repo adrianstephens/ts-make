@@ -1,6 +1,6 @@
 {
   "name": "@isopodlabs/make",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A package for reading and running makefiles with TypeScript.",
   "main": "dist/index.js",
   "files": [
@@ -11,11 +11,17 @@
     "build": "tsc",
     "test": "echo \"No tests specified\" && exit 0"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adrianstephens/ts-make.git"
+  },
   "keywords": [
-    "typescript",
-    "make",
     "makefile",
-    "build"
+    "parser",
+    "gnu make",
+    "build",
+    "typescript",
+    "nodejs"
   ],
   "author": "Adrian Stephens",
   "license": "MIT",
