@@ -164,13 +164,16 @@ const changed = await mf.run(['target'], {
 - Can be run programmatically using `make.cli(args)`, but note that the first two arguments should be the node executable and the path to the make module.
 
 ```ts
-import { cli } from '@isopodlabs/make';
+import { cli } from '@isopodlabs/make/cli';
 
 await cli(process.argv);
 ```
 
+Using the `cli` module's `builtinRules` and `builtinVariables`:
+
 ```ts
-import { Makefile, builtinRules, builtinVariables } from '@isopodlabs/make';
+import { Makefile } from '@isopodlabs/make';
+import { builtinRules, builtinVariables } from '@isopodlabs/make/cli';
 
 const mf = await Makefile.load('path/to/Makefile', {
 	variables: builtinVariables(),
