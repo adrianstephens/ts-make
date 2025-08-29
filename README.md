@@ -70,7 +70,8 @@ clean:
   - Conditionals: `ifeq`, `ifneq`, `ifdef`, `ifndef`, with `else`/`endif`.
   - `include`, `-include`, and `sinclude` with search over include dirs.
   - `export`/`unexport` and `.EXPORT_ALL_VARIABLES`.
-  - `.DEFAULT_GOAL` is honored.
+  - `undefine`
+  - `vpath`
 - Targets and rules:
   - Static, pattern, and double-colon rules; grouped targets; order-only prerequisites.
   - Legacy suffix rules are recognized and converted.
