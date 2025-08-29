@@ -118,16 +118,6 @@ export const defaultFunctions: Record<string, Function> = {
 		const b = toWords(list2);
 		return fromWords(Array.from({ length: Math.max(a.length, b.length) }, (_, i) => (a[i] ?? '') + (b[i] ?? '')));
 	},
-	wildcard: async (exp, pattern: string) =>	{
-		const cwd	= exp.get('CURDIR')!.value;
-		const files = await Promise.all(toWords(pattern).map(async i => {
-			const pattern = path.resolve(cwd, i);
-			return i.includes('*') || i.includes('?')
-				? await getDirs(path.dirname(pattern), globRe(path.basename(pattern)))
-				: pattern;
-		}));
-		return fromWords([...new Set(files.flat())]); // Remove duplicates
-	},
 	realpath: (exp, names: string) => {
 		const cwd		= exp.get('CURDIR')!.value;
 		const realpath	= (n: string) => fs.promises.realpath(n).catch(() => n);
@@ -210,61 +200,6 @@ export const defaultFunctions: Record<string, Function> = {
 	info:		(exp, message: string) => { console.info(message); return ''; },
 };
 
-//-----------------------------------------------------------------------------
-// globs
-//-----------------------------------------------------------------------------
-
-function globRe(glob: string) {
-	return anchored(glob
-		.replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape regex chars except * and ?
-		.replace(/\*/g, '[^/]*') // * matches any chars except dir separator
-		.replace(/\*\*/g, '.*') // ** matches any chars
-		.replace(/\?/g, '.') // ? matches single char
-	);
-}
-
-async function getDirs(dir: string, glob: RegExp): Promise<string[]> {
-	const star = dir.indexOf('*');
-	if (star >= 0) {
-		const startDir	= dir.lastIndexOf(path.sep, star);
-		const endDir	= dir.indexOf(path.sep, star);
-		const dirDone	= dir.substring(0, startDir);
-		const dirWild	= dir.substring(startDir + 1, endDir >= 0 ? endDir : undefined);
-		const dirRest	= endDir >= 0 ? dir.substring(endDir + 1) : '';
-		const entries	= await fs.promises.readdir(dirDone, { withFileTypes: true });
-		
-		if (dirWild === '**') {
-			if (dirRest) {
-				return (await Promise.all(entries.filter(i => i.isDirectory()).map(async i => [
-					...await getDirs(path.join(i.parentPath, i.name, '**', dirRest), glob),
-					...await getDirs(path.join(i.parentPath, i.name, dirRest), glob)
-				]))).flat();
-			} else {
-				return (await Promise.all(entries.map(i => 
-					i.isDirectory()	? getDirs(path.join(i.parentPath, i.name, '**'), glob)
-					: glob.test(i.name) ? path.join(i.parentPath, i.name)
-					: []
-				))).flat();
-			}
-		} else {
-			const dirGlob = globRe(dirWild);
-			return (await Promise.all(entries
-				.filter(i => i.isDirectory() && dirGlob.test(i.name))
-				.map(i => getDirs(path.join(dirDone, i.name, dirRest), glob))
-			)).flat();
-		}
-	} else {
-		try {
-			const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-			return entries
-				.filter(i => !i.isDirectory() && glob.test(i.name))
-				.map(i => path.join(i.parentPath, i.name));
-		} catch (error) {
-			console.log(`Warning: Cannot read directory ${dir}: ${error}`);
-			return [];
-		}
-	}
-}
 
 //-----------------------------------------------------------------------------
 // Expander
@@ -321,7 +256,7 @@ export class ExpanderClass implements Expander {
 		if (end < body.length) {
 			const fn	= this.functions[name];
 			if (!fn)
-				throw new Error(`Unknown function: ${name} in $(${body})`);
+				throw new Error(`Unknown function: ${name}`);
 
 			const raw = fn.raw ?? false;
 			const args: (string|Promise<string>)[] = [];
@@ -340,14 +275,11 @@ export class ExpanderClass implements Expander {
 			}
 		}
 
-		if (!this.get(body) && body.length === 2 && (body[1] === 'D' || body[1] === 'F')) {
-			const base = this.get(body[0])?.value;
+		if (!this.variables.get(name) && name.length === 2 && (name[1] === 'D' || name[1] === 'F')) {
+			const base = this.get(name)?.value;
 			if (base)
-				return body[1] === 'D' ? path.dirname(base) : path.basename(base);
+				return name[1] === 'D' ? path.dirname(base) : path.basename(base);
 		}
-
-		//if (!this.get(name))
-		//	console.log(`Unknown variable: ${body}`);
 
 		const val	= this.get(name)?.value ?? '';
 		return this.get(name)?.recurse
@@ -355,10 +287,12 @@ export class ExpanderClass implements Expander {
 			: val;
 	}
 
-	constructor(public variables: Variables, public functions: Record<string, Function>, private depth = 0) {
+	constructor(public variables: Variables, public functions: Record<string, Function>, private depth: number, private warnUndef: boolean) {
 	}
 
 	get(name: string): VariableValue | undefined {
+		if (this.warnUndef && !this.variables.has(name))
+			console.log(`Unknown variable: ${name}`);
 		return this.variables.get(name);
 	}
 
@@ -405,14 +339,14 @@ export class ExpanderClass implements Expander {
 	with(context: Record<string, VariableValue> | Map<string, VariableValue> | undefined): Expander {
 		return context ? new ExpanderClass(
 			new Map([...this.variables, ...(context instanceof Map ? context : Object.entries(context))]),
-			this.functions, this.depth
+			this.functions, this.depth, this.warnUndef
 		) : this;
 	}
 
 	withoutPrivate(): Expander {
 		return new ExpanderClass(
 			new Map([...this.variables].filter(([_, v]) => !v.priv)),
-			this.functions, this.depth
+			this.functions, this.depth, this.warnUndef
 		);
 	}
 	
@@ -423,23 +357,160 @@ export class ExpanderClass implements Expander {
 
 }
 
+export async function searchPath(target: string, paths: string[], cwd: string): Promise<string | undefined> {
+	if (path.isAbsolute(target))
+		return fs.promises.access(target).then(() => target).catch(() => undefined);
+
+	const promises = paths.map(i => {
+		const fullpath = path.resolve(cwd, i, target);
+		return fs.promises.access(fullpath).then(() => fullpath).catch(() => undefined);
+	});
+
+	for (const p of promises) {
+		const result = await p;
+		if (result)
+			return result;
+	}
+}
+
+// fix windows vars like ProgramFiles(x86)
+function fix_name(input: string): string {
+	return input.replace(/[():]/g, '^$&');
+}
+
+export function getEnvironmentVariables(): Record<string, VariableValue> {
+	const env: Record<string, VariableValue> = {};
+	for (const [k, v] of Object.entries(process.env)) {
+		if (v !== undefined)
+			env[fix_name(k)] = {value: v, origin: 'environment'};
+	}
+	return env;
+}
+
 //-----------------------------------------------------------------------------
-// VariablesClass adds setVariable
+// MakefileCore
 //-----------------------------------------------------------------------------
 
-export class VariablesClass extends ExpanderClass {
+//const suffixes = ['out', 'a', 'ln', 'o', 'c', 'cc', 'C', 'cpp', 'p', 'f', 'F', 'm', 'r', 'y', 'l', 'ym', 'lm', 's', 'S', 'mod', 'sym', 'def', 'h', 'info', 'dvi', 'tex', 'texinfo', 'texi', 'txinfo', 'w', 'ch', 'web', 'sh', 'elc', 'el'];
+const features = 'else-if extra-prereqs grouped-target oneshell order-only second-expansion shell-export shortest-stem target-specific undefine';
+//'.FEATURES':		'target-specific order-only second-expansion else-if shortest-stem undefine oneshell archives jobserver output-sync load',
+
+const dotNames = [
+//	'LIBPATTERNS',
+	'DEFAULT_GOAL',
+	'RECIPEPREFIX',
+	'VARIABLES',
+	'FEATURES',
+	'INCLUDE_DIRS',
+] as const;
+
+const plainNames = [
+	'VPATH',
+	'SUFFIXES',
+	'CURDIR',
+] as const;
+
+type BuiltinVar		= typeof dotNames[number] | typeof plainNames[number];
+type BuiltinVars	= { [K in BuiltinVar]: string };
+
+function makeBuiltinValue(obj: any, name: string, old?: VariableValue) {
+	let desc: PropertyDescriptor | undefined;
+	for (let p = obj; p && !(desc = Object.getOwnPropertyDescriptor(p, name)); p = Object.getPrototypeOf(p))
+		;
+
+	const v			= {builtin: true};
+	const direct	= desc?.value !== undefined;
+	Object.defineProperty(v, 'value', {
+		get: direct ? () => obj[name] : desc?.get?.bind(obj),
+		set: direct ? (v: string) => obj[name] = v : desc?.set?.bind(obj)
+	});
+
+	const vv	= v as VariableValue;
+	if (old && (direct || desc?.set))
+		vv.value = old.value;
+
+	return vv;
+}
+
+export interface RuleEntry {
+	targets:		string;
+	prerequisites:	string;
+	recipe?:		string[];
+	file?:			string;
+	lineNo?:		number;		// line of the rule header (1-based)
+	doubleColon?:	boolean;	// means 'terminal' on pattern rules
+	grouped?:		boolean;	// true if the rule is a grouped rule
+	builtin?:		boolean;	// true if the rule is a builtin rule
+}
+
+export interface DeferredInclude {
+	file:			string;
+	lineNo:			number;
+	noError:		boolean;
+}
+
+export class MakefileCore extends ExpanderClass implements BuiltinVars {
+	scopes:			Record<string, Variables>	= {};
+	suffixes: 		Set<string>;
+
+	private vpath:		Record<string, { re: RegExp, paths: string[] }>	= {};
+	private vpathAll:	string[]					= [];
+
+	deferredIncludes:	DeferredInclude[]		= [];
+
+	exportAll		= false;
+	defaultGoal		= '';
+	recipeRe		= /^(?:\t| {4})/;
+
+	CURDIR			= '';
+
+	set RECIPEPREFIX(val: string)	{
+		this.recipeRe	= val ? new RegExp('^' + escapeRe(val[0])) : /^(?:\t| {4})/;
+	}
+	get VARIABLES()			{ return fromWords(Array.from(this.variables.keys())); }
+	get FEATURES()			{ return features; }
+	get INCLUDE_DIRS()		{ return fromWords(this.includeDirs); }
+	get VPATH()				{ return fromWords(this.vpathAll); }
+	get SUFFIXES()			{ return fromWords(Array.from(this.suffixes).map(s => '.' + s)); }
+	get DEFAULT_GOAL()		{
+		if (!this.defaultGoal)
+			this.defaultGoal = toWords(this.rules.find(r => !r.builtin && !r.targets.includes('%') && !r.targets.startsWith('.'))?.targets ?? '')[0];
+		return this.defaultGoal;
+	}
+	set DEFAULT_GOAL(val)	{ this.defaultGoal = val; }
+
+	constructor(
+		variables: Record<string, VariableValue>,
+		functions: Record<string, Function>,
+		public rules: RuleEntry[],
+		public includeDirs: string[],
+		warnUndef: boolean, public envOverrides: boolean
+	) {
+		super(new Map(Object.entries(variables)), functions, 0, warnUndef);
+
+		this.suffixes	= new Set(this.rules.filter(({targets, prerequisites}) => targets === '%' && prerequisites.startsWith('%.') && !prerequisites.includes(' ')).map(rule => rule.prerequisites.slice(1)));
+
+		for (const i of dotNames)
+			this.variables.set('.' + i, makeBuiltinValue(this, i, this.variables.get('.' + i)));
+		for (const i of plainNames)
+			this.variables.set(i, makeBuiltinValue(this, i, this.variables.get(i)));
+	}
+
 	async setVariable(name: string, op: string, value: string, origin: VariableOrigin, scope?: Variables, priv?: boolean) {
-		const readscope = scope ? new Map([...this.variables, ...scope]) : this.variables;
+		const exp = this.with(scope);
 		if (!scope)
 			scope = this.variables;
 
 		const old = scope.get(name);
 		if (old?.origin === 'command line' && origin !== 'override')
 			return;
-		if (old?.origin === 'environment' && origin === 'override')
-			origin = 'environment override';
+		if (old?.origin === 'environment') {
+			if (origin === 'override')
+				origin = 'environment override';
+			else if (this.envOverrides)
+				return;
+		}
 
-		const exp = new ExpanderClass(readscope, this.functions);
 		switch (op) {
 			case ':':
 			case '::':		// immediate expansion
@@ -474,18 +545,57 @@ export class VariablesClass extends ExpanderClass {
 				break;
 		}
 	}
-}
 
-// fix windows vars like ProgramFiles(x86)
-function fix_name(input: string): string {
-	return input.replace(/[():]/g, '^$&');
-}
-
-export function getEnvironmentVariables(): Record<string, VariableValue> {
-	const env: Record<string, VariableValue> = {};
-	for (const [k, v] of Object.entries(process.env)) {
-		if (v !== undefined)
-			env[fix_name(k)] = {value: v, origin: 'environment'};
+	addRule(rule: RuleEntry) {
+		this.rules.push(rule);
 	}
-	return env;
+	addRecipeLine(line: string) {
+		if (this.rules.length)
+			(this.rules.at(-1)!.recipe ??= []).push(line);
+	}
+
+	setVPath(pattern: string, dirs?: string[]) {
+		if (pattern) {
+			if (dirs)
+				this.vpath[pattern] = { re: anchored(escapeRe(pattern).replace('%', '.*?')), paths: dirs };
+			else
+				delete this.vpath[pattern];
+		} else {
+			if (dirs)
+				this.vpathAll.push(...dirs);
+			else
+				this.vpath = {};
+		}
+	}
+
+	async getPath(target: string) {
+		if (!path.isAbsolute(target)) {
+			const cwd = this.CURDIR;
+			for (const i of Object.values(this.vpath)) {
+				const m = i.re.exec(target);
+				if (m) {
+					const result = await searchPath(target, i.paths, cwd);
+					if (result)
+						return path.relative(cwd, result);
+				}
+			}
+			const result = await searchPath(target, this.vpathAll, cwd);
+			if (result)
+				return path.relative(cwd, result);
+		}
+	}
+
+	loadIncludes(files: string[]): Promise<{file: string, filepath?: string, promise?: Promise<string>}>[] {
+		const cwd = this.CURDIR;
+		return files.map(async file => {
+			const filepath = await searchPath(file, this.includeDirs, cwd);
+			return filepath
+				? { file: path.relative(cwd, filepath), filepath, promise: fs.promises.readFile(filepath, 'utf8') }
+				: { file };
+		});
+	}
+
+	shell() {
+		return (process.platform === 'win32' && this.get('MAKESHELL')?.value) || this.get('SHELL')?.value;
+	}
 }
