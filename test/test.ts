@@ -27,8 +27,8 @@ Makefile.load('test.mak').then(async m => {
 //	for (const r of m.rules)
 //		output(r);
 
-	await m.execute(['clean'], {noSilent: true, output});
-	await m.execute(['all'], {noSilent: true, output});
+	await m.run(['clean'], {noSilent: true, output});
+	await m.run(['all'], {noSilent: true, output});
 	m.RECIPEPREFIX = '>';
 	output("done");
 });

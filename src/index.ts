@@ -1,14 +1,15 @@
 import { MakefileCore, Function, VariableValue, RuleEntry, fromWords, toWords, defaultFunctions, anchored} from "./core";
 import { RunOptions, run } from "./run";
 import { parse } from "./parse";
-import { cli } from "./cli";
 import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 export { RuleEntry, VariableValue, getEnvironmentVariables, makeWordFunction, fromWords, toWords, defaultFunctions } from "./core";
 export { RunOptions } from "./run";
-export { cli, builtinRules, builtinVariables } from "./cli";
+
+//import { cli } from "./cli";
+//export { cli, builtinRules, builtinVariables } from "./cli";
 
 //Automatic variables
 //--------------------------
@@ -220,5 +221,17 @@ defaultFunctions.wildcard = async (exp, pattern: string) => {
 // Auto-invoke CLI if run directly from command line
 //-----------------------------------------------------------------------------
 
-if (require.main === module)
-	cli(process.argv).then(code => process.exit(code));
+if (require.main === module) {
+	import('./cli')
+		.then(module => module.cli(process.argv))
+		.then(code => process.exit(code))
+		.catch(error => {
+			if (error.code === 'MODULE_NOT_FOUND') {
+				console.error('CLI not available in this build');
+				process.exit(1);
+			} else {
+				console.error('CLI error:', error.message);
+				process.exit(1);
+			}
+		});
+}

@@ -10,7 +10,7 @@
 			"name": "Launch Program",
 			"program": "${workspaceFolder}/dist/index.js",
             "cwd": "${workspaceFolder}",
-            "args": ["-f","test\\test.mak"],
+            "args": ["-C", "test", "-f", "test.mak", "clean"],
             //"args": ["--print-directory"],
             "sourceMaps": true,
             "smartStep": true,

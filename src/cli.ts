@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { Makefile, RunOptions, VariableValue, RuleEntry } from './index';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -268,7 +270,7 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		{
 			names: ['C', 'directory'],
 			description: 'Change to directory dir before reading the makefiles.',
-			process: arg => { directory = arg; run.printDirectory ??= true; },
+			process: arg => { directory = path.resolve(directory, arg); run.printDirectory ??= true; },
 			passdown: false
 		},
 		{
@@ -555,4 +557,12 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		return error.code || 1;
 	}
 
+}
+
+//-----------------------------------------------------------------------------
+// Auto-invoke CLI if run directly as binary
+//-----------------------------------------------------------------------------
+
+if (require.main === module) {
+	cli(process.argv).then(code => process.exit(code));
 }

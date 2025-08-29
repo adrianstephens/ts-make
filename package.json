@@ -1,8 +1,15 @@
 {
   "name": "@isopodlabs/make",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A package for reading and running makefiles with TypeScript.",
   "main": "dist/index.js",
+  "bin": {
+    "make": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "README.md"
