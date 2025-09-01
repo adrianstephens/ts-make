@@ -202,6 +202,74 @@ export const defaultFunctions: Record<string, Function> = {
 
 
 //-----------------------------------------------------------------------------
+// globs
+//-----------------------------------------------------------------------------
+
+function globRe(glob: string) {
+	return anchored(glob
+		.replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape regex chars except * and ?
+		.replace(/\*/g, '[^/]*') // * matches any chars except dir separator
+		.replace(/\*\*/g, '.*') // ** matches any chars
+		.replace(/\?/g, '.') // ? matches single char
+	);
+}
+
+async function getDirs(dir: string, glob: RegExp): Promise<string[]> {
+	const star = dir.indexOf('*');
+	if (star >= 0) {
+		const startDir	= dir.lastIndexOf(path.sep, star);
+		const endDir	= dir.indexOf(path.sep, star);
+		const dirDone	= dir.substring(0, startDir);
+		const dirWild	= dir.substring(startDir + 1, endDir >= 0 ? endDir : undefined);
+		const dirRest	= endDir >= 0 ? dir.substring(endDir + 1) : '';
+		const entries	= await fs.promises.readdir(dirDone, { withFileTypes: true });
+		
+		if (dirWild === '**') {
+			if (dirRest) {
+				return (await Promise.all(entries.filter(i => i.isDirectory()).map(async i => [
+					...await getDirs(path.join(i.parentPath, i.name, '**', dirRest), glob),
+					...await getDirs(path.join(i.parentPath, i.name, dirRest), glob)
+				]))).flat();
+			} else {
+				return (await Promise.all(entries.map(i => 
+					i.isDirectory()	? getDirs(path.join(i.parentPath, i.name, '**'), glob)
+					: glob.test(i.name) ? path.join(i.parentPath, i.name)
+					: []
+				))).flat();
+			}
+		} else {
+			const dirGlob = globRe(dirWild);
+			return (await Promise.all(entries
+				.filter(i => i.isDirectory() && dirGlob.test(i.name))
+				.map(i => getDirs(path.join(dirDone, i.name, dirRest), glob))
+			)).flat();
+		}
+	} else {
+		try {
+			const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+			return entries
+				.filter(i => !i.isDirectory() && glob.test(i.name))
+				.map(i => path.join(i.parentPath, i.name));
+		} catch (error) {
+			console.log(`Warning: Cannot read directory ${dir}: ${error}`);
+			return [];
+		}
+	}
+}
+
+defaultFunctions.wildcard = async (exp, pattern: string) => {
+	const cwd	= exp.get('CURDIR')!.value;
+	const files = await Promise.all(toWords(pattern).map(async i => {
+		const pattern = path.resolve(cwd, i);
+		return i.includes('*') || i.includes('?')
+			? await getDirs(path.dirname(pattern), globRe(path.basename(pattern)))
+			: pattern;
+	}));
+	return fromWords([...new Set(files.flat())]); // Remove duplicates
+};
+
+
+//-----------------------------------------------------------------------------
 // Expander
 //-----------------------------------------------------------------------------
 
@@ -371,20 +439,6 @@ export async function searchPath(target: string, paths: string[], cwd: string): 
 		if (result)
 			return result;
 	}
-}
-
-// fix windows vars like ProgramFiles(x86)
-function fix_name(input: string): string {
-	return input.replace(/[():]/g, '^$&');
-}
-
-export function getEnvironmentVariables(): Record<string, VariableValue> {
-	const env: Record<string, VariableValue> = {};
-	for (const [k, v] of Object.entries(process.env)) {
-		if (v !== undefined)
-			env[fix_name(k)] = {value: v, origin: 'environment'};
-	}
-	return env;
 }
 
 //-----------------------------------------------------------------------------
@@ -595,7 +649,4 @@ export class MakefileCore extends ExpanderClass implements BuiltinVars {
 		});
 	}
 
-	shell() {
-		return (process.platform === 'win32' && this.get('MAKESHELL')?.value) || this.get('SHELL')?.value;
-	}
 }

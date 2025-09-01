@@ -32,7 +32,7 @@ async function main() {
   const mf = await Makefile.parse(await readFile('Makefile', 'utf8'));
 
   // Run default goal or provide explicit goals
-  const changed = await mf.execute(['all'], {
+  const changed = await mf.run(['all'], {
     jobs: 4,                                  // run up to 4 jobs in parallel
     mode: 'normal',                           // 'normal' | 'dry-run' | 'question' | 'touch'
     output: s => process.stdout.write(s),     // capture stdout/stderr from recipes
@@ -41,10 +41,6 @@ async function main() {
   console.log('did work:', changed);
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
 ```
 
 Minimal Makefile example:
@@ -110,7 +106,7 @@ clean:
 - Classes and types:
   - [`Makefile`](dist/parse.d.ts)
   - [`CreateOptions`](dist/index.d.ts)
-  - [`RunOptions`](dist/run.d.ts)
+  - [`RunOptions`](dist/index.d.ts)
 
 
 ### Create options
@@ -138,7 +134,7 @@ const mf2 = await Makefile.load('path/to/Makefile');
 
 ### Run options
 
-See [`RunOptions`](dist/run.d.ts):
+See [`RunOptions`](dist/index.d.ts):
 
 - `mode`: `'normal' | 'dry-run' | 'question' | 'touch'`
 - `jobs`: number (default 1)
@@ -158,10 +154,11 @@ const changed = await mf.run(['target'], {
 
 
 ## CLI
-- Incorporates a gnumake-compatible command line interface
+This is an optional sub-module, which:
+- Provides a gnumake-compatible command line interface
 - Automatically invoked if run directly from command line
 - Optionally supplies builtin rules and variables
-- Can be run programmatically using `make.cli(args)`, but note that the first two arguments should be the node executable and the path to the make module.
+- Can be run programmatically using `make.cli(args)`, but note that the first two arguments should be the node executable and the path to the make/cli module.
 
 ```ts
 import { cli } from '@isopodlabs/make/cli';

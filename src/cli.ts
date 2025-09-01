@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { Makefile, RunOptions, VariableValue, RuleEntry } from './index';
+import { Makefile, RunOptions, VariableValue, RuleEntry, getEnvironmentVariables } from './index';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -244,7 +244,7 @@ const MakeRunDebug: Record<string, Partial<RunDebug>> = {
 } as const;
 
 export async function cli(args: string[], output: (s: string)=>void = s => process.stdout.write(s)): Promise<number> {
-	const	variables: Record<string, VariableValue> = {};
+	const	variables		= getEnvironmentVariables();
 	const	run:			RunOptions 		= {output};
     const	goals:			string[]		= [];
 	const	filenames:		string[]		= [];
@@ -354,7 +354,8 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 			names: ['O', 'output-sync[=type]'],
 			description: 'Ensure that the complete output from each recipe is printed in one uninterrupted sequence.',
 			process: arg => run.outputSync
-				= arg === 'target' || arg === 'line' || arg === 'recurse' ? arg
+				= !arg ? 'target'
+				: arg === 'target' || arg === 'line' || arg === 'recurse' ? arg
 				: arg === 'none' ? undefined : undefined
 		},
 		{
@@ -437,8 +438,8 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 	let flags = '';
 	const longFlags: string[] = [];
 
-	if (process.env.MAKEFLAGS) {
-		const makeflags = ('-' + process.env.MAKEFLAGS).split(' ');
+	if (variables.MAKEFLAGS) {
+		const makeflags = ('-' + variables.MAKEFLAGS.value).split(' ');
 		args = makeflags.concat(args);
 	}
 
@@ -522,6 +523,12 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 	variables.MAKECMDGOALS	= { value: goals.join(' ') };
 	variables.CURDIR		= { value: directory };
 
+	if (variables.MAKELEVEL) {
+		variables.MAKELEVEL.value = String(Number(variables.MAKELEVEL.value) + 1);
+	} else {
+		variables.MAKELEVEL = { value: '1' };
+	}
+
 	const mf 	= new Makefile({
 		variables:	noBuiltinVars ? variables : {...builtinVariables(), ...variables},
 		functions:	defaultFunctions,
@@ -545,7 +552,7 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		if (run.printDirectory)
 			output(`make: Entering directory: ${directory}\n`);
 
-		const result	= await mf. run(goals, run);
+		const result	= await mf.run(goals, run);
 
 		if (run.printDirectory)
 			output(`make: Leaving directory: ${directory}\n`);
@@ -554,7 +561,9 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 
 	} catch (error: any) {
 		output(`${error.message} in ${filenames[0]}\n`);
-		return error.code || 1;
+		if (typeof error.code === 'number')
+			return error.code;
+		return error.errno || 1;
 	}
 
 }

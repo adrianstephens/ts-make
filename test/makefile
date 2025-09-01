@@ -56,7 +56,7 @@ extra\extra.txt: | extra
 # Pattern rule with automatic vars
 pattern\%.o: src\%.txt | pattern
     rem compile $< -> $@
-    copy /y $< $@ >nul
+    copy /y $< $@
 
 # Use automatic vars ($^, $?) and order-only directories
 out\concat.txt: build\grouped1.txt build\grouped2.txt | out

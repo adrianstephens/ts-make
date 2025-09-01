@@ -1,15 +1,14 @@
-import { MakefileCore, Function, VariableValue, RuleEntry, fromWords, toWords, defaultFunctions, anchored} from "./core";
-import { RunOptions, run } from "./run";
+import { MakefileCore, Function, VariableValue, RuleEntry, Expander} from "./core";
+import { RecipeOptions, RunOptionsShared, run } from "./run";
 import { parse } from "./parse";
 import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-export { RuleEntry, VariableValue, getEnvironmentVariables, makeWordFunction, fromWords, toWords, defaultFunctions } from "./core";
-export { RunOptions } from "./run";
+export { RuleEntry, VariableValue, makeWordFunction, fromWords, toWords, defaultFunctions } from "./core";
 
-//import { cli } from "./cli";
-//export { cli, builtinRules, builtinVariables } from "./cli";
+import * as os from 'os';
+import * as crypto from 'crypto';
 
 //Automatic variables
 //--------------------------
@@ -30,7 +29,7 @@ export { RunOptions } from "./run";
 //MAKE				c		The name with which make was invoked. Using this variable in recipes has special meaning. 
 //MAKE_VERSION		x		The built-in variable ‘MAKE_VERSION’ expands to the version number of the GNU make program.
 //MAKE_HOST			x		The built-in variable ‘MAKE_HOST’ expands to a string representing the host that GNU make was built to run on.
-//MAKELEVEL					The number of levels of recursion (sub-makes).
+//MAKELEVEL			c		The number of levels of recursion (sub-makes).
 //MAKEFLAGS			c		The flags given to make. You can set this in the environment or a makefile to set flags.
 //GNUMAKEFLAGS				Other flags parsed by make. You can set this in the environment or a makefile to set make command-line flags. GNU make never sets this variable itself.
 //MAKECMDGOALS		c		The targets given to make on the command line. Setting this variable has no effect on the operation of make.
@@ -41,11 +40,11 @@ export { RunOptions } from "./run";
 //Other Special Variables
 //--------------------------
 //MAKEFILE_LIST		x		Contains the name of each makefile that is parsed by make, in the order in which it was parsed
-//.DEFAULT_GOAL				Sets the default goal to be used if no targets were specified on the command line
+//.DEFAULT_GOAL		x		Sets the default goal to be used if no targets were specified on the command line
 //MAKE_RESTARTS				This variable is set only if this instance of make has restarted (see How Makefiles Are Remade): it will contain the number of times this instance has restarted
 //MAKE_TERMOUT	
-//MAKE_TERMERR				When make starts it will check whether stdout and stderr will show their output on a terminal. If so, it will set MAKE_TERMOUT and MAKE_TERMERR, respectively, to the name of the terminal device (or true if this cannot be determined
-//.RECIPEPREFIX				The first character of the value of this variable is used as the character make assumes is introducing a recipe line
+//MAKE_TERMERR				When make starts it will check whether stdout and stderr will show their output on a terminal. If so, it will set MAKE_TERMOUT and MAKE_TERMERR, respectively, to the name of the terminal device (or true if this cannot be determined)
+//.RECIPEPREFIX		x		The first character of the value of this variable is used as the character make assumes is introducing a recipe line
 //.VARIABLES		x		Expands to a list of the names of all global variables defined so far
 //.FEATURES			x		Expands to a list of special features supported by this version of make
 //.INCLUDE_DIRS		x		Expands to a list of directories that make searches for included makefiles
@@ -72,6 +71,215 @@ export { RunOptions } from "./run";
 //target-specific	x		Supports target-specific and pattern-specific variable assignments
 //undefine			x		Supports the undefine directive
 
+
+//-----------------------------------------------------------------------------
+// Semaphore
+//-----------------------------------------------------------------------------
+
+interface Lock {
+	release(): void;
+}
+
+interface WaitingPromise {
+	resolve(lock: Lock): void;
+	reject(err?: Error): void;
+}
+
+class Semaphore {
+	private running = 0;
+	private waiting: WaitingPromise[] = [];
+
+	constructor(public max: number) {
+	}
+
+	private release() {
+		this.running--;
+		// If there are tasks waiting and we can run more, start the next task
+		if (this.running < this.max && this.waiting.length > 0) {
+			this.running++;
+			// Get the next task from the queue and resolve the promise to allow it to start, provide a release function
+			this.waiting.shift()!.resolve({release: this.release.bind(this)});
+		}
+	}
+
+	acquire(): Promise<Lock> {
+		if (this.running < this.max) {
+			this.running++;
+			return Promise.resolve({release: this.release.bind(this)});
+		}
+		return new Promise<Lock>((resolve, reject) => this.waiting.push({resolve, reject}));
+	}
+
+
+	// Purge all waiting tasks
+	purge(reason = 'The semaphore was purged'): void {
+		this.waiting.forEach(task => task.reject(new Error(reason)));
+		this.running = 0;
+		this.waiting = [];
+	}
+}
+
+//-----------------------------------------------------------------------------
+// helpers
+//-----------------------------------------------------------------------------
+
+class SeededRNG {
+	constructor(private seed: number) {}
+
+	next(): number {
+		this.seed = (this.seed * 1664525 + 1013904223) % (2 ** 32);
+		return this.seed / (2 ** 32);
+	}
+}
+
+async function touchFile(abs: string) {
+	await fs.promises.mkdir(path.dirname(abs), { recursive: true }).catch(() => {});
+	await fs.promises.open(abs, 'a').then(f => f.close()).catch(() => {});
+	await fs.promises.utimes(abs, new Date(), new Date()).catch(() => {});
+}
+
+async function timeStampSymlink(file: string) {
+	try {
+		const lstat = await fs.promises.lstat(file);
+		return !lstat.isSymbolicLink()
+			? lstat.mtimeMs
+			: Math.max(lstat.mtimeMs, (await fs.promises.stat(file)).mtimeMs);
+	} catch {
+		return 0;
+	}
+}
+
+async function timeStamp(file: string) {
+	try {
+		return (await fs.promises.stat(file)).mtimeMs;
+	} catch {
+		return 0;
+	}
+}
+
+function deleteFile(file: string) {
+	return fs.promises.unlink(file);
+}
+
+function shuffle<T>(array: T[], rng: SeededRNG): T[] {
+	for (let i = array.length; i--; ) {
+		const j = Math.floor(rng.next() * (i + 1));
+		[array[i], array[j]] = [array[j], array[i]];
+	}
+	return array;
+}
+
+async function mapAsync<T, U>(arr: T[], fn: (arg: T) => Promise<U>): Promise<U[]> {
+	return Promise.all(arr.map(fn));
+}
+
+//-----------------------------------------------------------------------------
+// runRecipe
+//-----------------------------------------------------------------------------
+
+const reHasMAKE = /\$\((?:MAKE)\)|\$\{(?:MAKE)\}/;
+
+function parseRecipeLine(line: string) {
+	const m = /^([-+@]*)(.*)/.exec(line)!;
+	return {
+		ignore: m[1].includes('-'),
+		silent: m[1].includes('@'),
+		force:	m[1].includes('+') || reHasMAKE.test(m[2]),
+		cmd:	m[2]
+	};
+}
+
+function close(code: number|null, ignore: boolean, resolve: (value: number) => void, reject: (reason?: Error) => void) {
+	if (code && !ignore)
+		reject(new Error(`Command failed with exit code ${code}`));
+	else
+		resolve(0);
+}
+
+// Execute recipe lines
+async function runRecipe(recipe: string[], exp: Expander, opt: RecipeOptions,
+	dryRun: boolean,
+	output:		(text: string) => void,
+	lineflush: () => void,
+	spawnOpts: child_process.SpawnOptions
+): Promise<void> {
+	
+	function echo(child: child_process.ChildProcess) {
+		child.stdout?.on('data', chunk => output(chunk.toString()));
+		child.stderr?.on('data', chunk => output(chunk.toString()));
+	}
+
+	if (opt.oneshell && recipe.length > 1) {
+		const first		= parseRecipeLine(recipe[0])!;
+		const cmds 		= (await mapAsync([first.cmd, ...recipe.slice(1)], async raw => (await exp.expand(raw)).trim())).filter(Boolean);
+		const ignore	= opt.ignoreErrors || first.ignore;
+
+		if (opt.noSilent || !(first.silent || opt.silent)) {
+			for (const i of cmds)
+				output(i + '\r\n');
+		}
+
+		if (!dryRun || first.force || recipe.some(r => reHasMAKE.test(r))) {
+			if (process.platform === 'win32') {
+				const script = cmds.map(ignore
+					? cmd => `call ${cmd}`
+					: cmd => `call ${cmd} || exit /b %ERRORLEVEL%`
+				).join('\r\n');
+
+				const file = path.join(os.tmpdir(), `taskmake-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.cmd`);
+				await fs.promises.writeFile(file, script, 'utf8');
+
+				await new Promise<number>((resolve, reject) => echo(
+					child_process.spawn(file, [], spawnOpts)
+					.on('error', err => reject(err))
+					.on('close', code => {
+						fs.promises.unlink(file).catch(() => {});
+						close(code, ignore, resolve, reject);
+					})
+				));
+
+			} else {
+				const script = cmds.map(ignore
+					? cmd => `(${cmd}) || true`
+					: cmd => `(${cmd}) || exit $?`
+				).join('\n');
+
+				await new Promise<number>((resolve, reject) => echo(
+					child_process.spawn(script, [], spawnOpts)
+					.on('error', err => reject(err))
+					.on('close', code => close(code, ignore, resolve, reject))
+				));
+				lineflush();
+			}
+		}
+		
+	} else {
+
+		for (const i of recipe) {
+			const c		= parseRecipeLine(i);
+			const cmd	= (await exp.expand(c.cmd)).trim();
+
+			if (opt.noSilent || !(c.silent || opt.silent))
+				output(cmd + '\r\n');
+
+			if (cmd && (!dryRun || c.force)) {
+				const ignore = opt.ignoreErrors || c.ignore;
+				await new Promise<number>((resolve, reject) => echo(
+					child_process.spawn(cmd, [], spawnOpts)
+					.on('error', err => reject(err))
+					.on('close', code => close(code, ignore, resolve, reject))
+				));
+				lineflush();
+			}
+		}
+	}
+}
+
+
+//-----------------------------------------------------------------------------
+// Makefile
+//-----------------------------------------------------------------------------
+
 export interface CreateOptions {
 	variables?:		Record<string, VariableValue>;
 	functions?:		Record<string, Function>;
@@ -81,8 +289,20 @@ export interface CreateOptions {
 	warnUndef?: 	boolean;
 }
 
-export class Makefile extends MakefileCore {
+export type RunMode = 'normal' | 'dry-run' | 'question' | 'touch';
 
+export interface RunOptions extends RunOptionsShared {
+	output?:		(text: string) => void;
+	jobs?: 			number;
+	maxLoad?:		number;
+	mode?: 			RunMode;
+	checkSymlink?:	boolean;
+	printDirectory?: boolean;
+	shuffle?: 		'reverse' | number;
+	outputSync?: 	'target' | 'line' | 'recurse';
+}
+
+export class Makefile extends MakefileCore {
 	constructor(options?: CreateOptions) {
 		super(
 			{
@@ -125,8 +345,55 @@ export class Makefile extends MakefileCore {
 		return parse(this, text, file);
 	}
 
-	run(goals: string[] = [], options?: RunOptions): Promise<boolean> {
-		return run(this, goals, options);
+	async run(goals: string[] = [], options?: RunOptions): Promise<boolean> {
+		const buffer: string[] = [];
+		const output	= options?.output || (_text => {});
+		const flush		= () => { output(buffer.join('')); buffer.length = 0; };
+		const cwd		= this.CURDIR;
+		const semaphore	= new Semaphore(options?.jobs ?? 1);
+		const rng		= new SeededRNG(typeof options?.shuffle === 'number' ? options.shuffle : 123456);
+
+		const r = await run(this, goals, {
+			runRecipe: options?.mode === 'touch'
+				? (recipe, targets, _exp, _opt) => mapAsync(targets, t => touchFile(path.resolve(cwd, t))).then(() => {})
+				: (recipe, targets, exp, opt) => runRecipe(
+					recipe, exp, opt,
+					options?.mode === 'dry-run',
+					options?.outputSync ? text => buffer.push(text) : output,
+					options?.outputSync === 'line' ? flush : () => {},
+					{
+						cwd,
+						shell:		this.shell(),
+						env: 		{...process.env, ...exp.exports(opt.exportAll === true) },
+						windowsHide: true,
+					}
+				).then(options?.outputSync === 'target' ? flush : () => {}),
+
+			timestamp: options?.checkSymlink
+				? file => timeStampSymlink(path.resolve(cwd, file))
+				: file => timeStamp(path.resolve(cwd, file)),
+
+			deleteFile: file => deleteFile(path.resolve(cwd, file)),
+
+			rearrange: !options?.shuffle
+				? prerequisites => prerequisites
+				: options.shuffle==='reverse'
+				? prerequisites => prerequisites.reverse()
+				: prerequisites => shuffle(prerequisites, rng),
+
+			jobServer:		() => semaphore.acquire(),
+
+			exportAll:		this.exportAll,
+			stopOnRebuild:	options?.mode === 'question',
+
+			...options,
+		});
+		flush();
+		return r;
+	}
+
+	shell() {
+		return (process.platform === 'win32' && this.get('MAKESHELL')?.value) || this.get('SHELL')?.value;
 	}
 
 	static async parse(text: string, options?: CreateOptions): Promise<Makefile> {
@@ -149,89 +416,18 @@ export class Makefile extends MakefileCore {
 		}
 	}
 }
-//-----------------------------------------------------------------------------
-// globs
-//-----------------------------------------------------------------------------
 
-function globRe(glob: string) {
-	return anchored(glob
-		.replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape regex chars except * and ?
-		.replace(/\*/g, '[^/]*') // * matches any chars except dir separator
-		.replace(/\*\*/g, '.*') // ** matches any chars
-		.replace(/\?/g, '.') // ? matches single char
-	);
+// fix windows vars like ProgramFiles(x86)
+function fix_name(input: string): string {
+	return input.replace(/[():]/g, '^$&');
 }
 
-async function getDirs(dir: string, glob: RegExp): Promise<string[]> {
-	const star = dir.indexOf('*');
-	if (star >= 0) {
-		const startDir	= dir.lastIndexOf(path.sep, star);
-		const endDir	= dir.indexOf(path.sep, star);
-		const dirDone	= dir.substring(0, startDir);
-		const dirWild	= dir.substring(startDir + 1, endDir >= 0 ? endDir : undefined);
-		const dirRest	= endDir >= 0 ? dir.substring(endDir + 1) : '';
-		const entries	= await fs.promises.readdir(dirDone, { withFileTypes: true });
-		
-		if (dirWild === '**') {
-			if (dirRest) {
-				return (await Promise.all(entries.filter(i => i.isDirectory()).map(async i => [
-					...await getDirs(path.join(i.parentPath, i.name, '**', dirRest), glob),
-					...await getDirs(path.join(i.parentPath, i.name, dirRest), glob)
-				]))).flat();
-			} else {
-				return (await Promise.all(entries.map(i => 
-					i.isDirectory()	? getDirs(path.join(i.parentPath, i.name, '**'), glob)
-					: glob.test(i.name) ? path.join(i.parentPath, i.name)
-					: []
-				))).flat();
-			}
-		} else {
-			const dirGlob = globRe(dirWild);
-			return (await Promise.all(entries
-				.filter(i => i.isDirectory() && dirGlob.test(i.name))
-				.map(i => getDirs(path.join(dirDone, i.name, dirRest), glob))
-			)).flat();
-		}
-	} else {
-		try {
-			const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-			return entries
-				.filter(i => !i.isDirectory() && glob.test(i.name))
-				.map(i => path.join(i.parentPath, i.name));
-		} catch (error) {
-			console.log(`Warning: Cannot read directory ${dir}: ${error}`);
-			return [];
-		}
+export function getEnvironmentVariables(): Record<string, VariableValue> {
+	const env: Record<string, VariableValue> = {};
+	for (const [k, v] of Object.entries(process.env)) {
+		if (v !== undefined)
+			env[fix_name(k)] = {value: v, origin: 'environment'};
 	}
+	return env;
 }
 
-defaultFunctions.wildcard = async (exp, pattern: string) => {
-	const cwd	= exp.get('CURDIR')!.value;
-	const files = await Promise.all(toWords(pattern).map(async i => {
-		const pattern = path.resolve(cwd, i);
-		return i.includes('*') || i.includes('?')
-			? await getDirs(path.dirname(pattern), globRe(path.basename(pattern)))
-			: pattern;
-	}));
-	return fromWords([...new Set(files.flat())]); // Remove duplicates
-};
-
-
-//-----------------------------------------------------------------------------
-// Auto-invoke CLI if run directly from command line
-//-----------------------------------------------------------------------------
-
-if (require.main === module) {
-	import('./cli')
-		.then(module => module.cli(process.argv))
-		.then(code => process.exit(code))
-		.catch(error => {
-			if (error.code === 'MODULE_NOT_FOUND') {
-				console.error('CLI not available in this build');
-				process.exit(1);
-			} else {
-				console.error('CLI error:', error.message);
-				process.exit(1);
-			}
-		});
-}
