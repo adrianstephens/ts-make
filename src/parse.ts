@@ -61,7 +61,7 @@ async function doConditional(exp: Expander, condition: ConditionalLine): Promise
 // include
 //-----------------------------------------------------------------------------
 
-export async function include(mf: MakefileCore, files: string[]): Promise<string[]> {
+export async function includeFiles(mf: MakefileCore, files: string[]): Promise<string[]> {
 	const promises = mf.loadIncludes(files);
 	const failed: string[] = [];
 
@@ -219,7 +219,7 @@ export async function parse(mf: MakefileCore, text: string, file: string) {
 						if (args) {
 							const files		= toWords(await mf.expand(args));
 							const noError	= command === 'sinclude'|| command === '-include';
-							const failed	= await include(mf, files);
+							const failed	= await includeFiles(mf, files);
 							mf.deferredIncludes.push(...failed.map(file => ({ file, noError, lineNo })));
 						}
 						break;

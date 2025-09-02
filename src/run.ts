@@ -1,5 +1,5 @@
 import { MakefileCore, RuleEntry, Variables, Expander, toWords, fromWords, anchored, escapeRe } from './core';
-import { include } from './parse';
+import { includeFiles } from './parse';
 
 interface Lock {
 	release(): void;
@@ -31,7 +31,7 @@ export interface RunOptionsShared extends RecipeOptions{
 	debug?: 		RunDebug;	//unimplemented
 }
 
-export interface RunOptionsInternal extends RunOptionsShared {
+export interface RunOptionsDirect extends RunOptionsShared {
 	runRecipe:		(recipe: string[], targets: string[], exp: Expander, opt: RecipeOptions) => Promise<void>;
 	timestamp:		(file: string) => Promise<number>;
 	deleteFile:		(file: string) => Promise<void>;
@@ -120,7 +120,7 @@ function unique<T>(array: T[]) {
 }
 
 
-export async function run(make: MakefileCore, goals: string[], opt: RunOptionsInternal): Promise<boolean> {
+export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDirect): Promise<boolean> {
 //	const cwd = make.CURDIR;
 
 	const exactRules:		Record<string, Rule|Rule[]>	= {};
@@ -488,13 +488,10 @@ export async function run(make: MakefileCore, goals: string[], opt: RunOptionsIn
 	if (incResults.some(Boolean)) {
 		const numRules	= make.rules.length;
 		const numScopes = Object.keys(make.scopes).length;
-		await include(make, make.deferredIncludes.map(i => i.file));
+		await includeFiles(make, make.deferredIncludes.map(i => i.file));
 		await prepareRules(make.rules.slice(numRules), make);			// in case new rules were added
 		prepareScopes(Object.entries(make.scopes).slice(numScopes));	// in case new scopes were added
 	}
-
-	if (goals.length === 0)
-		goals.push(make.DEFAULT_GOAL);
 
 	return (await mapAsync(goals, g => getPath(g).then(g => buildTarget(g, make)))).some(Boolean);
 }

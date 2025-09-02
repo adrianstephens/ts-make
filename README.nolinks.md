@@ -94,7 +94,7 @@ clean:
   - `-` ignore errors, `@` silent, `+` force execution.
   - `.ONESHELL` or per-call option to run a whole recipe in a single shell.
 - Execution modes:
-  - `normal`, `dry-`[`run`][run] (print commands), `question` (returns true if any rebuild is needed), `touch` (create missing files and update timestamps).
+  - `normal`, `dry-run` (print commands), `question` (returns true if any rebuild is needed), `touch` (create missing files and update timestamps).
 - Parallelism:
   - `jobs` option to control concurrency.
   - `.NOTPARALLEL` serializes prerequisites for affected targets.
@@ -104,9 +104,9 @@ clean:
 ## API
 
 - Classes and types:
-  - [`Makefile`][Makefile]
-  - [`CreateOptions`][CreateOptions]
-  - [`RunOptions`][RunOptions]
+  - `Makefile`
+  - `CreateOptions`
+  - `RunOptions`
 
 
 ### Makefile
@@ -122,28 +122,28 @@ This class encapsulates a makefile. It provides direct access to these builtin v
 - `DEFAULT_GOAL`
 
 #### Construction
- - `new `[`Makefile`][Makefile]`(options?:`[`CreateOptions`][CreateOptions]`);` 
+ - `new Makefile(options?:CreateOptions);` 
  	creates an empty makefile
- - [`Makefile`][Makefile]`.`[`parse`][parse]`(text: string, options?:`[`CreateOptions`][CreateOptions]`)`
+ - `Makefile.parse(text: string, options?:CreateOptions)`
  	creates a makefile from text
- - [`Makefile`][Makefile]`.load(filePath: string, options?:`[`CreateOptions`][CreateOptions]`)`
+ - `Makefile.load(filePath: string, options?:CreateOptions)`
  	creates a makefile from a file
 
 #### Methods
  - `get(name: string)` lookup a variable
- - `setVariable(name: string, op: string, value: string, origin:VariableOrigin, scope?:`[`Variables`][Variables]`, priv?: boolean)` set a variable.
- - `setFunction(name: string, fn:`[`Function`][Function]`)` override (or add) a function.
- - `addRule(rule:`[`RuleEntry`][RuleEntry]`)` add a rule.
- - [`parse`][parse]`(text: string, file?: string)` parse additional text into makefile (file is used to improve error messages).
- - [`run`][run]`(goals?: string[], options?:`[`RunOptions`][RunOptions]`)` make goals.
-  - `runDirect(goals: string[] = [], options:`[`RunOptionsDirect`][RunOptionsDirect]`)` make goals
+ - `setVariable(name: string, op: string, value: string, origin:VariableOrigin, scope?:Variables, priv?: boolean)` set a variable.
+ - `setFunction(name: string, fn:Function)` override (or add) a function.
+ - `addRule(rule:RuleEntry)` add a rule.
+ - `parse(text: string, file?: string)` parse additional text into makefile (file is used to improve error messages).
+ - `run(goals?: string[], options?:RunOptions)` make goals.
+  - `runDirect(goals: string[] = [], options:RunOptionsDirect)` make goals
 
 ### Create options
 
-See [`CreateOptions`][CreateOptions]
-- `variables`: `Record<string, `[`VariableValue`][VariableValue]`>` initial variables.
-- `functions`: `Record<string, `[`Function`][Function]`>` functions to override or augment the standard make functions
-- `rules`: [`RuleEntry`][RuleEntry]`[]` initial ruleset; also used to generate `.SUFFIXES`.
+See `CreateOptions`
+- `variables`: `Record<string, VariableValue>` initial variables.
+- `functions`: `Record<string, Function>` functions to override or augment the standard make functions
+- `rules`: `RuleEntry[]` initial ruleset; also used to generate `.SUFFIXES`.
 - `includeDirs`: `string[]` search paths for include.
 - `envOverrides`	whether environment variables take precedence.
 - `warnUndef` 	warn when an undefined variable is accessed.
@@ -163,9 +163,9 @@ const mf2 = await Makefile.load('path/to/Makefile');
 
 ### Run options
 
-See [`RunOptions`][RunOptions]:
+See `RunOptions`:
 
-- `mode`: `'normal' | 'dry-`[`run`][run]`' | 'question' | 'touch'`
+- `mode`: `'normal' | 'dry-run' | 'question' | 'touch'`
 - `jobs`: number (default 1)
 - `output`: `(chunk: string) => void` to capture stdout/stderr
 - `ignoreErrors`, `silent`, `noSilent`, `oneshell`
@@ -195,7 +195,7 @@ import { cli } from '@isopodlabs/make/cli';
 await cli(process.argv);
 ```
 
-Using the [`cli`][cli] module's [`builtinRules`][builtinRules] and [`builtinVariables`][builtinVariables]:
+Using the `cli` module's `builtinRules` and `builtinVariables`:
 
 ```ts
 import { Makefile } from '@isopodlabs/make';
@@ -222,18 +222,3 @@ Open an issue or pull request on [GitHub](https://github.com/adrianstephens/ts-m
 ## License
 
 MIT © Adrian Stephens
-
-<!-- Type References -->
-[run]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L123
-[Makefile]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L304
-[CreateOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L283
-[RunOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L294
-[parse]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/parse.ts#L105
-[Variables]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L15
-[Function]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L25
-[RuleEntry]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L489
-[RunOptionsDirect]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L34
-[VariableValue]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L6
-[cli]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L246
-[builtinRules]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L216
-[builtinVariables]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L85

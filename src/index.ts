@@ -1,5 +1,5 @@
 import { MakefileCore, Function, VariableValue, RuleEntry, Expander} from "./core";
-import { RecipeOptions, RunOptionsShared, run } from "./run";
+import { RecipeOptions, RunOptionsDirect, RunOptionsShared, run } from "./run";
 import { parse } from "./parse";
 import * as child_process from 'child_process';
 import * as fs from 'fs';
@@ -297,7 +297,6 @@ export interface RunOptions extends RunOptionsShared {
 	maxLoad?:		number;
 	mode?: 			RunMode;
 	checkSymlink?:	boolean;
-	printDirectory?: boolean;
 	shuffle?: 		'reverse' | number;
 	outputSync?: 	'target' | 'line' | 'recurse';
 }
@@ -353,6 +352,9 @@ export class Makefile extends MakefileCore {
 		const semaphore	= new Semaphore(options?.jobs ?? 1);
 		const rng		= new SeededRNG(typeof options?.shuffle === 'number' ? options.shuffle : 123456);
 
+		if (goals.length === 0)
+			goals.push(this.DEFAULT_GOAL);
+
 		const r = await run(this, goals, {
 			runRecipe: options?.mode === 'touch'
 				? (recipe, targets, _exp, _opt) => mapAsync(targets, t => touchFile(path.resolve(cwd, t))).then(() => {})
@@ -390,6 +392,10 @@ export class Makefile extends MakefileCore {
 		});
 		flush();
 		return r;
+	}
+
+	async runDirect(goals: string[] = [], options: RunOptionsDirect): Promise<boolean> {
+		return await run(this, goals, options);
 	}
 
 	shell() {

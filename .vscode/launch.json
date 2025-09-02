@@ -38,6 +38,20 @@
             "sourceMaps": true,
             "preLaunchTask": "npm: build",
 			"console": "integratedTerminal"
+        },
+		{
+            "type": "node-terminal",
+            "name": "Debug Transform",
+            "request": "launch",
+            "command": "npm run build",
+            "cwd": "${workspaceFolder}"
+        },
+		{
+            "type": "node-terminal",
+            "name": "Debug MakeLinks",
+            "request": "launch",
+            "command": "ts-node ./scripts/makelinks.ts",
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

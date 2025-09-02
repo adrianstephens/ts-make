@@ -255,6 +255,7 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 	let		noBuiltinVars	= false;
 	let		envOverrides	= false;
 	let		warnUndef		= false;
+	let		printDirectory: boolean|undefined;
 
 	const options: Option[] = [
 		{
@@ -270,7 +271,7 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		{
 			names: ['C', 'directory'],
 			description: 'Change to directory dir before reading the makefiles.',
-			process: arg => { directory = path.resolve(directory, arg); run.printDirectory ??= true; },
+			process: arg => { directory = path.resolve(directory, arg); printDirectory ??= true; },
 			passdown: false
 		},
 		{
@@ -415,12 +416,12 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		{
 			names: ['w', 'print-directory'],
 			description: 'Print a message containing the working directory both before and after executing the makefile.',
-			process: () => run.printDirectory = true
+			process: () => printDirectory = true
 		},
 		{
 			names: ['no-print-directory'],
 			description: 'Disable printing of the working directory under -w.',
-			process: () => run.printDirectory = false
+			process: () => printDirectory = false
 		},
 		{
 			names: ['W', 'what-if', 'new-file', 'assume-new'],
@@ -549,12 +550,12 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 			await mf.parse(text, filenames[i]);
 		}
 
-		if (run.printDirectory)
+		if (printDirectory)
 			output(`make: Entering directory: ${directory}\n`);
 
 		const result	= await mf.run(goals, run);
 
-		if (run.printDirectory)
+		if (printDirectory)
 			output(`make: Leaving directory: ${directory}\n`);
 
 		return result ? 0 : 1;
