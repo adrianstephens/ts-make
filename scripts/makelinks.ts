@@ -74,7 +74,7 @@ function addLinks(readme: string, types: Map<string, string>) {
 
 // Usage
 const types = extractAllTypes('src');
-const readme = fs.readFileSync('README.nolinks.md', 'utf8');
+const readme = fs.readFileSync('nolinks.README.md', 'utf8');
 //const updated = removeLinks(readme);
 const updated = addLinks(removeLinks(readme), types);
 fs.writeFileSync('README.md', updated);

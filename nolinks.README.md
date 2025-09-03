@@ -107,6 +107,8 @@ clean:
   - `Makefile`
   - `CreateOptions`
   - `RunOptions`
+  - `RunOptionsDirect`
+  - `RuleEntry`
 
 
 ### Makefile
@@ -122,21 +124,46 @@ This class encapsulates a makefile. It provides direct access to these builtin v
 - `DEFAULT_GOAL`
 
 #### Construction
- - `new Makefile(options?:CreateOptions);` 
- 	creates an empty makefile
+ - `new Makefile(options?:CreateOptions)` 
+
+ 	Creates an empty makefile with *only* the provided variables (plus `SHELL`, `MAKESHELL`, `MAKE_VERSION`, `MAKE_HOST`) and rules.
+
  - `Makefile.parse(text: string, options?:CreateOptions)`
- 	creates a makefile from text
+
+ 	As above, but also parses the text into the makefile.
+
  - `Makefile.load(filePath: string, options?:CreateOptions)`
- 	creates a makefile from a file
+
+ 	Creates a makefile from a file. If options.variables is undefined, the environment variables will be used. Also sets `CURDIR` and `MAKEFILE_LIST`.
 
 #### Methods
- - `get(name: string)` lookup a variable
- - `setVariable(name: string, op: string, value: string, origin:VariableOrigin, scope?:Variables, priv?: boolean)` set a variable.
- - `setFunction(name: string, fn:Function)` override (or add) a function.
- - `addRule(rule:RuleEntry)` add a rule.
- - `parse(text: string, file?: string)` parse additional text into makefile (file is used to improve error messages).
- - `run(goals?: string[], options?:RunOptions)` make goals.
-  - `runDirect(goals: string[] = [], options:RunOptionsDirect)` make goals
+ - `get(name: string)`
+
+    Lookup a variable.
+ 
+ - `setVariable(name: string, op: string, value: string, origin: VariableOrigin)`
+
+    Set a variable.
+
+ - `setFunction(name: string, fn: Function)`
+
+    Override (or add) a function.
+
+ - `addRule(rule: RuleEntry)`
+
+    Add a rule.
+
+ - `parse(text: string, file?: string)`
+
+    Parse additional text into the makefile (`file` is used to improve error messages).
+
+ - `run(goals?: string[], options?: RunOptions)`
+ 
+    Make goals using provided options.
+
+  - `runDirect(goals: string[] = [], options: RunOptionsDirect)`
+  
+    Make goals using low-level options.
 
 ### Create options
 
@@ -150,10 +177,11 @@ See `CreateOptions`
 
 
 ```ts
-import { Makefile } from '@isopodlabs/make';
+import { Makefile, environmentVariables } from '@isopodlabs/make';
 
 // Parse from text
 const mf = await Makefile.parse(text, {
+  variables: environmentVariables(),
   includeDirs: ['.vscode', 'config/includes'],   // search paths for include
 });
 
@@ -165,9 +193,9 @@ const mf2 = await Makefile.load('path/to/Makefile');
 
 See `RunOptions`:
 
-- `mode`: `'normal' | 'dry-run' | 'question' | 'touch'`
-- `jobs`: number (default 1)
-- `output`: `(chunk: string) => void` to capture stdout/stderr
+- `mode` one of `normal`, `dry-run`, `question`, `touch`
+- `jobs` number of simultaneous jobs (default 1)
+- `output` to capture stdout/stderr
 - `ignoreErrors`, `silent`, `noSilent`, `oneshell`
 - `keepGoing`, `checkSymlink`, `printDirectory`:
 - `always`, `assumeOld`, `assumeNew`: override timestamp checks
@@ -181,12 +209,23 @@ const changed = await mf.run(['target'], {
 });
 ```
 
+See `RunOptionsDirect` for lower-level control over execution.
+
+### Rules
+See `RuleEntry`:
+- `targets`		    whitespace-separated list of targets
+- `prerequisites` whitespace-separated list of prerequisites
+- `recipe` optional array of strings containing the recipe
+- `doubleColon`	true if it's a doubleColon rule
+- `grouped` true if the rule is a grouped rule
+- `builtin` true if the rule is a builtin rule
+- `file`, `lineNo` location of definition
 
 ## CLI
 This is an optional sub-module, which:
-- Provides a gnumake-compatible command line interface
-- Automatically invoked if run directly from command line
-- Optionally supplies builtin rules and variables
+- Provides a gnumake-compatible command line interface.
+- Is automatically invoked if run directly from command line.
+- Optionally supplies builtin rules and variables.
 - Can be run programmatically, but note that the first two arguments should be the node executable and the path to the make/cli module.
 
 ```ts
@@ -198,11 +237,11 @@ await cli(process.argv);
 Using the `cli` module's `builtinRules` and `builtinVariables`:
 
 ```ts
-import { Makefile } from '@isopodlabs/make';
+import { Makefile, environmentVariables } from '@isopodlabs/make';
 import { builtinRules, builtinVariables } from '@isopodlabs/make/cli';
 
 const mf = await Makefile.load('path/to/Makefile', {
-	variables: builtinVariables(),
+	variables: {...builtinVariables(), ...environmentVariables()},
 	rules: builtinRules(),
 });
 mf.run(['all'], {jobs: 6})
@@ -213,6 +252,7 @@ mf.run(['all'], {jobs: 6})
 - No archive member support (`lib.a(member.o)`, `$%`), and no jobserver.
 - All rules and variables must be passed to the Makefile constructor (or via Makefile.parse or Makefile.load). The typical rules and variables can be obtained from the CLI component. In particular, variables such as MAKE and MAKEFLAGS are only available if manually provided or when run from the CLI.
 - Special targets with lifecycle semantics are recognized but not fully implemented: `.PRECIOUS`, `.INTERMEDIATE`, `.NOTINTERMEDIATE`, `.SECONDARY`, `.LOW_RESOLUTION_TIME`.
+- Requires Node.js, *however* only index.ts (and the optional cli) rely on any external modules (specifically, path, fs, os, and child_process), so parsing and running makefiles is possible without Node.js.
 
 ## Contributing
 

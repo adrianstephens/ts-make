@@ -1,45 +1,45 @@
 {
-	"name": "@isopodlabs/make",
-	"version": "0.4.0",
-	"description": "A package for reading and running makefiles with TypeScript.",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/adrianstephens/ts-make.git"
-	},
-	"main": "dist/index.js",
-	"bin": {
-		"make": "dist/cli.js"
-	},
-	"exports": {
-		".": "./dist/index.js",
-		"./cli": "./dist/cli.js"
-	},
-	"files": [
-		"dist/*.js",
-		"dist/*.d.ts",
-		"README.md"
-	],
-	"scripts": {
-		"build": "tsc",
-		"test": "echo \"No tests specified\" && exit 0",
-		"patch": "ts-patch install"
-	},
-	"keywords": [
-		"makefile",
-		"parser",
-		"gnu make",
-		"build",
-		"typescript",
-		"nodejs"
-	],
-	"author": "Adrian Stephens",
-	"license": "MIT",
-	"devDependencies": {
-		"@types/node": "^22.13.8",
-		"eslint": "^9.21.0",
-		"ts-node": "^10.9.2",
-		"ts-patch": "^3.3.0",
-		"typescript": "^5.8.2",
-		"typescript-eslint": "^8.26.0"
-	}
+  "name": "@isopodlabs/make",
+  "version": "0.5.0",
+  "description": "A package for reading and running makefiles with TypeScript.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adrianstephens/ts-make.git"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "make": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js"
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"No tests specified\" && exit 0",
+    "patch": "ts-patch install"
+  },
+  "keywords": [
+    "makefile",
+    "parser",
+    "gnu make",
+    "build",
+    "typescript",
+    "nodejs"
+  ],
+  "author": "Adrian Stephens",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.13.8",
+    "eslint": "^9.21.0",
+    "ts-node": "^10.9.2",
+    "ts-patch": "^3.3.0",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.26.0"
+  }
 }

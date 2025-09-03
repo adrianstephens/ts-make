@@ -11,13 +11,18 @@
 		},
 		{
 			"type": "shell",
+			"label": "makelinks",
+			"command": "ts-node ./scripts/makelinks.ts",
+		},
+		{
+			"type": "shell",
 			"label": "prepublish",
 			"command": "git add .; npm version ${input:version} --force",
 			"windows": {
 				"command": "git add . & npm version ${input:version} --force",
 			},
 			"problemMatcher": [],
-			"dependsOn": "npm: build"
+			"dependsOn": ["npm: build", "makelinks"]
 		},
 		{
 			"type": "shell",
@@ -31,7 +36,7 @@
 			"label": "PACKAGE",
 			"command": "npm pack",
 			"problemMatcher": [],
-			"dependsOn": "npm: build"
+			"dependsOn": ["npm: build", "makelinks"]
 		},
 	],
 	"inputs": [
