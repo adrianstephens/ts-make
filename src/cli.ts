@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { Makefile, RunOptions, VariableValue, RuleEntry, getEnvironmentVariables } from './index';
+import { Makefile, RunOptions, VariableValue, RuleEntry, environmentVariables } from './index';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -244,7 +244,7 @@ const MakeRunDebug: Record<string, Partial<RunDebug>> = {
 } as const;
 
 export async function cli(args: string[], output: (s: string)=>void = s => process.stdout.write(s)): Promise<number> {
-	const	variables		= getEnvironmentVariables();
+	const	variables		= environmentVariables();
 	const	run:			RunOptions 		= {output};
     const	goals:			string[]		= [];
 	const	filenames:		string[]		= [];

@@ -1,6 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
-
 type VariableOrigin	= 'undefined'| 'default' | 'environment' | 'environment override' | 'file' | 'command line' | 'override' | 'automatic';
 
 export interface VariableValue {
@@ -26,6 +23,9 @@ export interface Function {
 	(exp: Expander, ...args: any[]): string | Promise<string>;
 	raw?:		boolean;
 }
+
+export type SearchPath = (file: string, paths: string[], cwd: string) => Promise<string | undefined>;
+export type IncludeFiles = (files: string[]) => Promise<string[]>;
 
 //-----------------------------------------------------------------------------
 // functions
@@ -64,10 +64,10 @@ function fixPatterns(patterns: string[]) {
 	return new RegExp(patterns.map(i => escapeRe(i).replace('%', '.*?')).join('|'));
 }
 
-function applyWords(names: string, func: (word: string)=>string) {
+export function applyWords(names: string, func: (word: string)=>string) {
 	return fromWords(toWords(names).map(func));
 }
-async function applyWordsAsync(names: string, func: (word: string)=>Promise<string>) {
+export async function applyWordsAsync(names: string, func: (word: string)=>Promise<string>) {
 	return fromWords(await Promise.all(toWords(names).map(func)));
 }
 
@@ -106,11 +106,6 @@ export const defaultFunctions: Record<string, Function> = {
 	firstword:	(exp, names: string) =>						toWords(names)[0] || '',
 	lastword:	(exp, names: string) =>						toWords(names).at(-1) || '',
 
-// Functions for File Names
-	dir:		makeWordFunction((name: string) => 			path.dirname(name)),
-	notdir:		makeWordFunction((name: string) => 			path.basename(name)),
-	suffix:		makeWordFunction((name: string) => 			path.extname(name)),
-	basename:	makeWordFunction((name: string) => 			path.format({...path.parse(name), base: '', ext: ''})),
 	addsuffix:	(exp, suffix: string, names: string) => 	applyWords(names, name => name + suffix),
 	addprefix:	(exp, prefix: string, names: string) => 	applyWords(names, name => prefix + name),
 	join: (exp, list1: string, list2: string) => {
@@ -118,15 +113,8 @@ export const defaultFunctions: Record<string, Function> = {
 		const b = toWords(list2);
 		return fromWords(Array.from({ length: Math.max(a.length, b.length) }, (_, i) => (a[i] ?? '') + (b[i] ?? '')));
 	},
-	realpath: (exp, names: string) => {
-		const cwd		= exp.get('CURDIR')!.value;
-		const realpath	= (n: string) => fs.promises.realpath(n).catch(() => n);
-		return applyWordsAsync(names, async name => realpath(path.resolve(cwd, name)));
-	},
-	abspath: (exp, names: string) => {
-		const cwd	= exp.get('CURDIR')!.value;
-		return applyWords(names, name => path.resolve(cwd, name));
-	},
+
+// (Functions for File Names moved to index)
 
 // Functions for Conditionals
 	if:		(exp, condition: string, then: string, else_: string) => condition.trim() ? then : else_,
@@ -171,101 +159,9 @@ export const defaultFunctions: Record<string, Function> = {
 		//throw new Error(`Unknown variable: ${name}`);
 	},
 
-
-//$(file op filename,text)							Expand the arguments, then open the file filename using mode op and write text to that file.
-	file: async (exp, op_filename: string, text?: string) => {
-		const m = /^(>>|>|<)\s*(.+)$/.exec(op_filename.trim());
-		switch (m?.[1]) {
-			case '>':
-				await fs.promises.writeFile(m[2], text ?? '');
-				return '';
-
-			case '>>':
-				await fs.promises.appendFile(m[2], text ?? '');
-				return '';
-
-			case '<': {
-				let content = await fs.promises.readFile(m[2], 'utf8');
-				if (content.endsWith('\n'))
-					content = content.slice(0, -1);
-				return content;
-			}
-			default:
-				throw new Error(`Unknown file operation: ${op_filename}`);
-		}
-	},
-
 	error:		(exp, message: string) => { throw new Error(message); },
 	warning:	(exp, message: string) => { console.warn(message); return ''; },
 	info:		(exp, message: string) => { console.info(message); return ''; },
-};
-
-
-//-----------------------------------------------------------------------------
-// globs
-//-----------------------------------------------------------------------------
-
-function globRe(glob: string) {
-	return anchored(glob
-		.replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape regex chars except * and ?
-		.replace(/\*/g, '[^/]*') // * matches any chars except dir separator
-		.replace(/\*\*/g, '.*') // ** matches any chars
-		.replace(/\?/g, '.') // ? matches single char
-	);
-}
-
-async function getDirs(dir: string, glob: RegExp): Promise<string[]> {
-	const star = dir.indexOf('*');
-	if (star >= 0) {
-		const startDir	= dir.lastIndexOf(path.sep, star);
-		const endDir	= dir.indexOf(path.sep, star);
-		const dirDone	= dir.substring(0, startDir);
-		const dirWild	= dir.substring(startDir + 1, endDir >= 0 ? endDir : undefined);
-		const dirRest	= endDir >= 0 ? dir.substring(endDir + 1) : '';
-		const entries	= await fs.promises.readdir(dirDone, { withFileTypes: true });
-		
-		if (dirWild === '**') {
-			if (dirRest) {
-				return (await Promise.all(entries.filter(i => i.isDirectory()).map(async i => [
-					...await getDirs(path.join(i.parentPath, i.name, '**', dirRest), glob),
-					...await getDirs(path.join(i.parentPath, i.name, dirRest), glob)
-				]))).flat();
-			} else {
-				return (await Promise.all(entries.map(i => 
-					i.isDirectory()	? getDirs(path.join(i.parentPath, i.name, '**'), glob)
-					: glob.test(i.name) ? path.join(i.parentPath, i.name)
-					: []
-				))).flat();
-			}
-		} else {
-			const dirGlob = globRe(dirWild);
-			return (await Promise.all(entries
-				.filter(i => i.isDirectory() && dirGlob.test(i.name))
-				.map(i => getDirs(path.join(dirDone, i.name, dirRest), glob))
-			)).flat();
-		}
-	} else {
-		try {
-			const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-			return entries
-				.filter(i => !i.isDirectory() && glob.test(i.name))
-				.map(i => path.join(i.parentPath, i.name));
-		} catch (error) {
-			console.log(`Warning: Cannot read directory ${dir}: ${error}`);
-			return [];
-		}
-	}
-}
-
-defaultFunctions.wildcard = async (exp, pattern: string) => {
-	const cwd	= exp.get('CURDIR')!.value;
-	const files = await Promise.all(toWords(pattern).map(async i => {
-		const pattern = path.resolve(cwd, i);
-		return i.includes('*') || i.includes('?')
-			? await getDirs(path.dirname(pattern), globRe(path.basename(pattern)))
-			: pattern;
-	}));
-	return fromWords([...new Set(files.flat())]); // Remove duplicates
 };
 
 
@@ -276,7 +172,7 @@ defaultFunctions.wildcard = async (exp, pattern: string) => {
 function nextChar(input: string, i: number) {
 	const c = input[i];
 
-	if (c === '^') {
+	if (c === '\\') {
 		++i;
 
 	} else if (c === '$' && i < input.length) {
@@ -343,12 +239,13 @@ export class ExpanderClass implements Expander {
 			}
 		}
 
+/*
 		if (!this.variables.get(name) && name.length === 2 && (name[1] === 'D' || name[1] === 'F')) {
 			const base = this.get(name)?.value;
 			if (base)
 				return name[1] === 'D' ? path.dirname(base) : path.basename(base);
 		}
-
+*/
 		const val	= this.get(name)?.value ?? '';
 		return this.get(name)?.recurse
 			? this.expand(val)
@@ -425,22 +322,6 @@ export class ExpanderClass implements Expander {
 
 }
 
-export async function searchPath(target: string, paths: string[], cwd: string): Promise<string | undefined> {
-	if (path.isAbsolute(target))
-		return fs.promises.access(target).then(() => target).catch(() => undefined);
-
-	const promises = paths.map(i => {
-		const fullpath = path.resolve(cwd, i, target);
-		return fs.promises.access(fullpath).then(() => fullpath).catch(() => undefined);
-	});
-
-	for (const p of promises) {
-		const result = await p;
-		if (result)
-			return result;
-	}
-}
-
 //-----------------------------------------------------------------------------
 // MakefileCore
 //-----------------------------------------------------------------------------
@@ -485,7 +366,6 @@ function makeBuiltinValue(obj: any, name: string, old?: VariableValue) {
 
 	return vv;
 }
-
 export interface RuleEntry {
 	targets:		string;
 	prerequisites:	string;
@@ -507,8 +387,8 @@ export class MakefileCore extends ExpanderClass implements BuiltinVars {
 	scopes:			Record<string, Variables>	= {};
 	suffixes: 		Set<string>;
 
-	private vpath:		Record<string, { re: RegExp, paths: string[] }>	= {};
-	private vpathAll:	string[]					= [];
+	vpath:			Record<string, { re: RegExp, paths: string[] }>	= {};
+	vpathAll:		string[]					= [];
 
 	deferredIncludes:	DeferredInclude[]		= [];
 
@@ -541,6 +421,11 @@ export class MakefileCore extends ExpanderClass implements BuiltinVars {
 		warnUndef: boolean, public envOverrides: boolean
 	) {
 		super(new Map(Object.entries(variables)), functions, 0, warnUndef);
+
+		for (const i of '?@*%^+<') {
+			this.variables.set(i + 'D', { value: `$(patsubst %/,%,$(patsubst %\\,%,$(dir $${i})))`, origin: 'automatic', recurse: true });
+			this.variables.set(i + 'F', { value: `$(notdir $${i})`, origin: 'automatic', recurse: true });
+		}
 
 		this.suffixes	= new Set(this.rules.filter(({targets, prerequisites}) => targets === '%' && prerequisites.startsWith('%.') && !prerequisites.includes(' ')).map(rule => rule.prerequisites.slice(1)));
 
@@ -620,33 +505,6 @@ export class MakefileCore extends ExpanderClass implements BuiltinVars {
 			else
 				this.vpath = {};
 		}
-	}
-
-	async getPath(target: string) {
-		if (!path.isAbsolute(target)) {
-			const cwd = this.CURDIR;
-			for (const i of Object.values(this.vpath)) {
-				const m = i.re.exec(target);
-				if (m) {
-					const result = await searchPath(target, i.paths, cwd);
-					if (result)
-						return path.relative(cwd, result);
-				}
-			}
-			const result = await searchPath(target, this.vpathAll, cwd);
-			if (result)
-				return path.relative(cwd, result);
-		}
-	}
-
-	loadIncludes(files: string[]): Promise<{file: string, filepath?: string, promise?: Promise<string>}>[] {
-		const cwd = this.CURDIR;
-		return files.map(async file => {
-			const filepath = await searchPath(file, this.includeDirs, cwd);
-			return filepath
-				? { file: path.relative(cwd, filepath), filepath, promise: fs.promises.readFile(filepath, 'utf8') }
-				: { file };
-		});
 	}
 
 }

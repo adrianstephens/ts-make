@@ -2,6 +2,13 @@
 .PHONY: all clean help
 all: build\grouped1.txt build\grouped2.txt out\done.txt pattern\file1.o double\log.txt out\concat.txt out\what_changed.txt
 
+WIN32   := $(findstring win32,$(MAKE_HOST))
+REM     := $(if $(WIN32),rem,#)
+COPY    := $(if $(WIN32),copy /y, mv)
+TYPE    := $(if $(WIN32),type,cat)
+MKDIR   := $(if $(WIN32),if not exist $1 mkdir $1, mkdir -p $1)
+RMDIR   := $(if $(WIN32),if exist $1 rmdir /s /q $1, rm -rf $1)
+
 help:
     @echo Targets:
     @echo   all, clean
@@ -29,9 +36,9 @@ build\grouped1.txt build\grouped2.txt &: src\seed.txt | build
 
 # Double-colon rules: each rule evaluated independently
 double\log.txt:: double\stamp1 | double
-    echo [stamp1] >> double\log.txt
+    echo "[stamp1]" >> double\log.txt
 double\log.txt:: double\stamp2 | double
-    echo [stamp2] >> double\log.txt
+    echo "[stamp2]" >> double\log.txt
 
 double\stamp1: | double
     echo 1 > $@
@@ -55,12 +62,12 @@ extra\extra.txt: | extra
 
 # Pattern rule with automatic vars
 pattern\%.o: src\%.txt | pattern
-    rem compile $< -> $@
-    copy /y $< $@
+    $(REM) compile $< -> $@
+    $(COPY) $< $@
 
 # Use automatic vars ($^, $?) and order-only directories
 out\concat.txt: build\grouped1.txt build\grouped2.txt | out
-    type $^ > $@
+    $(TYPE) $^ > $@
 
 out\what_changed.txt: build\grouped1.txt build\grouped2.txt | out
     echo changed: $? > $@
@@ -74,23 +81,23 @@ src\file1.txt: | src
 
 # Directories as real targets (order-only prereqs depend on these)
 build:
-    if not exist build mkdir build
+    $(call MKDIR, build)
 out:
-    if not exist out mkdir out
+    $(call MKDIR, out)
 double:
-    if not exist double mkdir double
+    $(call MKDIR, double)
 pattern:
-    if not exist pattern mkdir pattern
+    $(call MKDIR, pattern)
 src:
-    if not exist src mkdir src
+    $(call MKDIR, src)
 extra:
-    if not exist extra mkdir extra
+    $(call MKDIR, extra)
 
 clean:
-    if exist build rmdir /s /q build
-    if exist out rmdir /s /q out
-    if exist double rmdir /s /q double
-    if exist pattern rmdir /s /q pattern
-    if exist src rmdir /s /q src
-    if exist extra rmdir /s /q extra
+    $(call RMDIR, build)
+    $(call RMDIR, out)
+    $(call RMDIR, double)
+    $(call RMDIR, pattern)
+    $(call RMDIR, src)
+    $(call RMDIR, extra)
     

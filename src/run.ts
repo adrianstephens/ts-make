@@ -1,7 +1,6 @@
 import { MakefileCore, RuleEntry, Variables, Expander, toWords, fromWords, anchored, escapeRe } from './core';
-import { includeFiles } from './parse';
 
-interface Lock {
+export interface Lock {
 	release(): void;
 }
 
@@ -19,11 +18,10 @@ export interface RecipeOptions {
 	silent?: 		boolean;
 	noSilent?: 		boolean;
 	oneshell?: 		boolean;
-	exportAll?:		boolean;
 }
 
 //passed through
-export interface RunOptionsShared extends RecipeOptions{
+export interface RunOptionsShared extends RecipeOptions {
 	always?: 		boolean;
 	keepGoing?: 	boolean;
 	assumeOld?: 	string[];
@@ -35,31 +33,12 @@ export interface RunOptionsDirect extends RunOptionsShared {
 	runRecipe:		(recipe: string[], targets: string[], exp: Expander, opt: RecipeOptions) => Promise<void>;
 	timestamp:		(file: string) => Promise<number>;
 	deleteFile:		(file: string) => Promise<void>;
+	includeFiles:	(files: string[]) => Promise<string[]>;
+	getPath:		(target: string) => Promise<string | undefined>;
 	rearrange:		(prerequisites: string[]) => string[];
 	jobServer:		() => Promise<Lock>;
 	stopOnRebuild:	boolean;
 }
-
-
-/*
-// gnu's way to implement these automatic variables
-const builtinVarsAuto: Record<string, string> = {
-	'?D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $?)))',
-	'?F':				'$(notdir $?)',
-	'@D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $@)))',
-	'@F':				'$(notdir $@)',
-	'*D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $*)))',
-	'*F':				'$(notdir $*)',
-	'%D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $%)))',
-	'%F':				'$(notdir $%)',
-	'^D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $^)))',
-	'^F':				'$(notdir $^)',
-	'+D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $+)))',
-	'+F':				'$(notdir $+)',
-	'<D':				'$(patsubst %/,%,$(patsubst %\\,%,$(dir $<)))',
-	'<F':				'$(notdir $<)',
-};
-*/
 
 async function mapAsync<T, U>(arr: T[], fn: (arg: T) => Promise<U>): Promise<U[]> {
 	return Promise.all(arr.map(fn));
@@ -95,7 +74,7 @@ const specialTargetNames = [
 	'IGNORE',
 	'LOW_RESOLUTION_TIME',
 	'SILENT',
-	'EXPORT_ALL_VARIABLES',
+//	'EXPORT_ALL_VARIABLES',
 	'NOTPARALLEL',
 	'ONESHELL',
 	'POSIX'
@@ -121,8 +100,6 @@ function unique<T>(array: T[]) {
 
 
 export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDirect): Promise<boolean> {
-//	const cwd = make.CURDIR;
-
 	const exactRules:		Record<string, Rule|Rule[]>	= {};
 	const patternRules:		PatternTable<Rule>			= [];
 	const anythingRules:	Rule[]						= [];
@@ -136,14 +113,12 @@ export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDi
 	const statCache = new Map<string, Promise<number>>();
 	function modTime(file: string): Promise<number> {
 		return statCache.get(file) ?? mapSet(statCache, file, opt.timestamp!(file));
-		//const abs = path.resolve(cwd, file);
-		//return statCache.get(abs) ?? mapSet(statCache, abs, opt.timestamp!(abs));
 	}
 
 	// Cache getPath results for this run() pass
 	const pathCache = new Map<string, Promise<string>>();
 	function getPathCheck(file: string) {
-		return pathCache.get(file) ?? mapSet(pathCache, file, make.getPath(file));
+		return pathCache.get(file) ?? mapSet(pathCache, file, opt.getPath(file));
 	}
 	function getPath(file: string) {
 		return getPathCheck(file).then(f => f ?? file);
@@ -482,13 +457,12 @@ export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDi
 	prepareScopes(Object.entries(make.scopes));
 
 	const special	= Object.fromEntries(specialTargetNames.map(name => [name, prerequisiteSet(exactRules['.' + name] as Rule)]));
-	opt.exportAll	= opt.exportAll || special.EXPORT_ALL_VARIABLES.size > 0;
 
 	const incResults = await mapAsync(make.deferredIncludes, inc => buildTarget(inc.file, make));
 	if (incResults.some(Boolean)) {
 		const numRules	= make.rules.length;
 		const numScopes = Object.keys(make.scopes).length;
-		await includeFiles(make, make.deferredIncludes.map(i => i.file));
+		await opt.includeFiles(make.deferredIncludes.map(i => i.file));
 		await prepareRules(make.rules.slice(numRules), make);			// in case new rules were added
 		prepareScopes(Object.entries(make.scopes).slice(numScopes));	// in case new scopes were added
 	}

@@ -1,4 +1,4 @@
-import { MakefileCore, VariableValue, Variables, Expander, toWords, scanBalanced, unescape } from './core';
+import { MakefileCore, VariableValue, Variables, Expander, toWords, scanBalanced, unescape, IncludeFiles } from './core';
 
 //-----------------------------------------------------------------------------
 // variable assignment
@@ -52,34 +52,9 @@ async function doConditional(exp: Expander, condition: ConditionalLine): Promise
 	switch (condition.type) {
 		case 'ifeq':	return equality(condition.args);
 		case 'ifneq':	return await equality(condition.args) === false;
-		case 'ifdef':	return !!exp.get(unescape(condition.args));
-		case 'ifndef':	return !exp.get(unescape(condition.args));
+		case 'ifdef':	return !!exp.get(condition.args);
+		case 'ifndef':	return !exp.get(condition.args);
 	}
-}
-
-//-----------------------------------------------------------------------------
-// include
-//-----------------------------------------------------------------------------
-
-export async function includeFiles(mf: MakefileCore, files: string[]): Promise<string[]> {
-	const promises = mf.loadIncludes(files);
-	const failed: string[] = [];
-
-	for (const i of promises) {
-		const { file, filepath, promise } = await i;
-		if (!promise) {
-			failed.push(file);
-		} else {
-			const text = await promise;
-			try {
-				await mf.setVariable('MAKEFILE_LIST', '+', filepath!, 'file');
-				await parse(mf, text, file);
-			} catch (error: any) {
-				throw new Error(`${error.message} in included ${file}`, error.options);
-			}
-		}
-	}
-	return failed;
 }
 
 //-----------------------------------------------------------------------------
@@ -102,7 +77,7 @@ function assignIfExists<T extends object, K extends keyof T>(obj: T | undefined,
 		obj[key] = value;
 }
 
-export async function parse(mf: MakefileCore, text: string, file: string) {
+export async function parse(mf: MakefileCore, text: string, file: string, includeFiles: IncludeFiles) {
 	const lines		= text.split(/\r?\n/);
 	const L			= lines.length;
 
@@ -158,9 +133,10 @@ export async function parse(mf: MakefileCore, text: string, file: string) {
 				line += lines[i++].replace(/\\\s*$/, '');
 			line += lines[i];
 
-			// Matches an unescaped # preceded by an even number of backslashes
-			line = line.replace(/(^|[^\\])((?:\\\\)*)#.*$/, (_m, p1, p2) => (p1 + p2)).trim();
-			//line = line.replace(/[^\\](?:\\\\)*#(.*)$/, '').trim();
+			// Remove comments, but not # inside variable references $(...)/${...}
+			const comment = scanBalanced(line, 0, '#');
+			line = unescape(line.slice(0, comment).trim());
+
 			if (!line)
 				continue;
 
@@ -219,7 +195,7 @@ export async function parse(mf: MakefileCore, text: string, file: string) {
 						if (args) {
 							const files		= toWords(await mf.expand(args));
 							const noError	= command === 'sinclude'|| command === '-include';
-							const failed	= await includeFiles(mf, files);
+							const failed	= await includeFiles(files);
 							mf.deferredIncludes.push(...failed.map(file => ({ file, noError, lineNo })));
 						}
 						break;
@@ -287,6 +263,9 @@ export async function parse(mf: MakefileCore, text: string, file: string) {
 					const semi 			= right.indexOf(';');
 					const prerequisites = (semi >= 0 ? right.slice(0, semi) : right).trim();
 					const recipe		= semi >= 0 ? [right.slice(semi + 1).trim()] : [];
+
+					if (targets.includes('.EXPORT_ALL_VARIABLES'))
+						mf.exportAll = true;
 
 					if (targets.includes('.SUFFIXES')) {
 						// Handle .SUFFIXES special case

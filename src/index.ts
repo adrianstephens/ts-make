@@ -1,14 +1,17 @@
-import { MakefileCore, Function, VariableValue, RuleEntry, Expander} from "./core";
-import { RecipeOptions, RunOptionsDirect, RunOptionsShared, run } from "./run";
+import { MakefileCore, Function, VariableValue, RuleEntry, Expander,
+	defaultFunctions, makeWordFunction, fromWords, toWords, applyWords, applyWordsAsync, anchored
+} from "./core";
+import { Lock, RunOptionsShared, RecipeOptions, RunOptionsDirect, run } from "./run";
 import { parse } from "./parse";
+
 import * as child_process from 'child_process';
 import * as fs from 'fs';
-import * as path from 'path';
-
-export { RuleEntry, VariableValue, makeWordFunction, fromWords, toWords, defaultFunctions } from "./core";
-
 import * as os from 'os';
+import * as path from 'path';
 import * as crypto from 'crypto';
+
+export { RuleEntry, VariableValue, defaultFunctions, makeWordFunction, fromWords, toWords } from "./core";
+
 
 //Automatic variables
 //--------------------------
@@ -75,10 +78,6 @@ import * as crypto from 'crypto';
 //-----------------------------------------------------------------------------
 // Semaphore
 //-----------------------------------------------------------------------------
-
-interface Lock {
-	release(): void;
-}
 
 interface WaitingPromise {
 	resolve(lock: Lock): void;
@@ -172,6 +171,126 @@ function shuffle<T>(array: T[], rng: SeededRNG): T[] {
 async function mapAsync<T, U>(arr: T[], fn: (arg: T) => Promise<U>): Promise<U[]> {
 	return Promise.all(arr.map(fn));
 }
+
+
+function globRe(glob: string) {
+	return anchored(glob
+		.replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape regex chars except * and ?
+		.replace(/\*/g, '[^/]*') // * matches any chars except dir separator
+		.replace(/\*\*/g, '.*') // ** matches any chars
+		.replace(/\?/g, '.') // ? matches single char
+	);
+}
+
+async function searchPath(target: string, paths: string[], cwd: string): Promise<string | undefined> {
+	if (path.isAbsolute(target))
+		return fs.promises.access(target).then(() => target).catch(() => undefined);
+
+	const promises = paths.map(i => {
+		const fullpath = path.resolve(cwd, i, target);
+		return fs.promises.access(fullpath).then(() => fullpath).catch(() => undefined);
+	});
+
+	for (const p of promises) {
+		const result = await p;
+		if (result)
+			return path.relative(cwd, result);
+	}
+}
+
+async function getDirs(dir: string, glob: RegExp): Promise<string[]> {
+	const star = dir.indexOf('*');
+	if (star >= 0) {
+		const startDir	= dir.lastIndexOf(path.sep, star);
+		const endDir	= dir.indexOf(path.sep, star);
+		const dirDone	= dir.substring(0, startDir);
+		const dirWild	= dir.substring(startDir + 1, endDir >= 0 ? endDir : undefined);
+		const dirRest	= endDir >= 0 ? dir.substring(endDir + 1) : '';
+		const entries	= await fs.promises.readdir(dirDone, { withFileTypes: true });
+		
+		if (dirWild === '**') {
+			if (dirRest) {
+				return (await Promise.all(entries.filter(i => i.isDirectory()).map(async i => [
+					...await getDirs(path.join(i.parentPath, i.name, '**', dirRest), glob),
+					...await getDirs(path.join(i.parentPath, i.name, dirRest), glob)
+				]))).flat();
+			} else {
+				return (await Promise.all(entries.map(i => 
+					i.isDirectory()	? getDirs(path.join(i.parentPath, i.name, '**'), glob)
+					: glob.test(i.name) ? path.join(i.parentPath, i.name)
+					: []
+				))).flat();
+			}
+		} else {
+			const dirGlob = globRe(dirWild);
+			return (await Promise.all(entries
+				.filter(i => i.isDirectory() && dirGlob.test(i.name))
+				.map(i => getDirs(path.join(dirDone, i.name, dirRest), glob))
+			)).flat();
+		}
+	} else {
+		try {
+			const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+			return entries
+				.filter(i => !i.isDirectory() && glob.test(i.name))
+				.map(i => path.join(i.parentPath, i.name));
+		} catch (error) {
+			console.log(`Warning: Cannot read directory ${dir}: ${error}`);
+			return [];
+		}
+	}
+}
+
+// Functions for File Names
+Object.assign(defaultFunctions, {
+	dir:		makeWordFunction((name: string) => 			path.dirname(name)),
+	notdir:		makeWordFunction((name: string) => 			path.basename(name)),
+	suffix:		makeWordFunction((name: string) => 			path.extname(name)),
+	basename:	makeWordFunction((name: string) => 			path.format({...path.parse(name), base: '', ext: ''})),
+	realpath: (exp, names: string) => {
+		const cwd		= exp.get('CURDIR')!.value;
+		const realpath	= (n: string) => fs.promises.realpath(n).catch(() => n);
+		return applyWordsAsync(names, async name => realpath(path.resolve(cwd, name)));
+	},
+	abspath: (exp, names: string) => {
+		const cwd	= exp.get('CURDIR')!.value;
+		return applyWords(names, name => path.resolve(cwd, name));
+	},
+	
+	wildcard: async (exp, pattern: string) => {
+		const cwd	= exp.get('CURDIR')!.value;
+		const files = await Promise.all(toWords(pattern).map(async i => {
+			const pattern = path.resolve(cwd, i);
+			return i.includes('*') || i.includes('?')
+				? await getDirs(path.dirname(pattern), globRe(path.basename(pattern)))
+				: pattern;
+		}));
+		return fromWords([...new Set(files.flat())]); // Remove duplicates
+	},
+
+	file: async (exp, op_filename: string, text?: string) => {
+		const m = /^(>>|>|<)\s*(.+)$/.exec(op_filename.trim());
+		switch (m?.[1]) {
+			case '>':
+				await fs.promises.writeFile(m[2], text ?? '');
+				return '';
+
+			case '>>':
+				await fs.promises.appendFile(m[2], text ?? '');
+				return '';
+
+			case '<': {
+				let content = await fs.promises.readFile(m[2], 'utf8');
+				if (content.endsWith('\n'))
+					content = content.slice(0, -1);
+				return content;
+			}
+			default:
+				throw new Error(`Unknown file operation: ${op_filename}`);
+		}
+	},
+
+} as Record<string, Function>);
 
 //-----------------------------------------------------------------------------
 // runRecipe
@@ -341,7 +460,7 @@ export class Makefile extends MakefileCore {
 	}
 
 	parse(text: string, file = ''): Promise<void> {
-		return parse(this, text, file);
+		return parse(this, text, file, this.includeFiles.bind(this));
 	}
 
 	async run(goals: string[] = [], options?: RunOptions): Promise<boolean> {
@@ -356,7 +475,7 @@ export class Makefile extends MakefileCore {
 			goals.push(this.DEFAULT_GOAL);
 
 		const r = await run(this, goals, {
-			runRecipe: options?.mode === 'touch'
+			runRecipe:		options?.mode === 'touch'
 				? (recipe, targets, _exp, _opt) => mapAsync(targets, t => touchFile(path.resolve(cwd, t))).then(() => {})
 				: (recipe, targets, exp, opt) => runRecipe(
 					recipe, exp, opt,
@@ -366,16 +485,18 @@ export class Makefile extends MakefileCore {
 					{
 						cwd,
 						shell:		this.shell(),
-						env: 		{...process.env, ...exp.exports(opt.exportAll === true) },
+						env: 		{...process.env, ...exp.exports(this.exportAll) },
 						windowsHide: true,
 					}
 				).then(options?.outputSync === 'target' ? flush : () => {}),
 
-			timestamp: options?.checkSymlink
+			timestamp:		options?.checkSymlink
 				? file => timeStampSymlink(path.resolve(cwd, file))
 				: file => timeStamp(path.resolve(cwd, file)),
 
-			deleteFile: file => deleteFile(path.resolve(cwd, file)),
+			deleteFile: 	file => deleteFile(path.resolve(cwd, file)),
+			includeFiles:	this.includeFiles.bind(this),
+			getPath:		this.getPath.bind(this),
 
 			rearrange: !options?.shuffle
 				? prerequisites => prerequisites
@@ -385,7 +506,6 @@ export class Makefile extends MakefileCore {
 
 			jobServer:		() => semaphore.acquire(),
 
-			exportAll:		this.exportAll,
 			stopOnRebuild:	options?.mode === 'question',
 
 			...options,
@@ -394,8 +514,67 @@ export class Makefile extends MakefileCore {
 		return r;
 	}
 
-	async runDirect(goals: string[] = [], options: RunOptionsDirect): Promise<boolean> {
-		return await run(this, goals, options);
+	async runDirect(goals: string[] = [], options: Partial<RunOptionsDirect>): Promise<boolean> {
+		const cwd		= this.CURDIR;
+		return await run(this, goals, {
+			runRecipe:		(recipe, targets, exp, opt) => runRecipe(recipe, exp, opt, false, _text=>{}, ()=>{}, {
+				cwd,
+				shell:		this.shell(),
+				env: 		{...process.env, ...exp.exports(this.exportAll) },
+				windowsHide: true,
+			}),
+			timestamp:		file => timeStamp(path.resolve(cwd, file)),
+			deleteFile: 	file => deleteFile(path.resolve(cwd, file)),
+			includeFiles:	this.includeFiles.bind(this),
+			getPath:		this.getPath.bind(this),
+			rearrange:		prerequisites => prerequisites,
+			jobServer:		() => Promise.resolve({release() {}}),
+			stopOnRebuild:	false,
+			...options
+		});
+	}
+
+	async getPath(file: string) {
+		if (!path.isAbsolute(file)) {
+			const cwd = this.CURDIR;
+			for (const i of Object.values(this.vpath)) {
+				const m = i.re.exec(file);
+				if (m) {
+					const result = await searchPath(file, i.paths, cwd);
+					if (result)
+						return result;
+				}
+			}
+			return await searchPath(file, this.vpathAll, cwd);
+		}
+	}
+
+	async includeFiles(files: string[]): Promise<string[]> {
+		const cwd		= this.CURDIR;
+		const promises	= files.map(async file => {
+			const filepath = await searchPath(file, this.includeDirs, cwd);
+			return filepath
+				? { file: filepath, promise: fs.promises.readFile(path.resolve(cwd, filepath), 'utf8') }
+				: { file };
+		});
+		
+		const failed: string[] = [];
+	
+		for (const i of promises) {
+			const { file, promise } = await i;
+			if (!promise) {
+				failed.push(file);
+			} else {
+				const text = await promise;
+				try {
+					await this.setVariable('MAKEFILE_LIST', '+', file, 'file');
+					await this.parse(text, file);
+				} catch (error: any) {
+					throw new Error(`${error.message} in included ${file}`, error.options);
+				}
+			}
+		}
+		return failed;
 	}
 
 	shell() {
@@ -404,7 +583,7 @@ export class Makefile extends MakefileCore {
 
 	static async parse(text: string, options?: CreateOptions): Promise<Makefile> {
 		const m	= new Makefile(options);
-		await parse(m, text, '');
+		await m.parse(text, '');
 		return m;
 	}
 
@@ -412,7 +591,8 @@ export class Makefile extends MakefileCore {
 		try {
 			const text = await fs.promises.readFile(filePath, 'utf8');
 			return await this.parse(text, { ...options,
-				variables: {...options?.variables,
+				variables: {
+					...(options?.variables ?? environmentVariables()),
 					CURDIR: 		{ value: path.dirname(path.resolve(process.cwd(), filePath)) },
 					MAKEFILE_LIST:	{ value: filePath },
 				}
@@ -428,7 +608,7 @@ function fix_name(input: string): string {
 	return input.replace(/[():]/g, '^$&');
 }
 
-export function getEnvironmentVariables(): Record<string, VariableValue> {
+export function environmentVariables(): Record<string, VariableValue> {
 	const env: Record<string, VariableValue> = {};
 	for (const [k, v] of Object.entries(process.env)) {
 		if (v !== undefined)
@@ -436,4 +616,3 @@ export function getEnvironmentVariables(): Record<string, VariableValue> {
 	}
 	return env;
 }
-

@@ -78,8 +78,8 @@ clean:
   - `.EXTRA_PREREQS` supported (added prerequisites not reflected in automatic vars).
 - Functions:
   - String and list: `subst`, `patsubst`, `strip`, `findstring`, `filter`, `filter-out`, `sort`,
-    `word`, `words`, `wordlist`, `firstword`, `lastword`, `join`.
-  - Filename: `dir`, `notdir`, `suffix`, `basename`, `addsuffix`, `addprefix`, `wildcard`,
+    `word`, `words`, `wordlist`, `firstword`, `lastword`, [`join`][join].
+  - Filename: `dir`, `notdir`, `suffix`, [`basename`][basename], `addsuffix`, `addprefix`, `wildcard`,
     `realpath`, `abspath`.
   - Conditionals/logic: `if`, `or`, `and`, `intcmp`.
   - Variables/meta: `value`, `origin`, `flavor`, `call`, `foreach`, `let`, `file`, `error`, `warning`, `info`.
@@ -107,6 +107,8 @@ clean:
   - [`Makefile`][Makefile]
   - [`CreateOptions`][CreateOptions]
   - [`RunOptions`][RunOptions]
+  - [`RunOptionsDirect`][RunOptionsDirect]
+  - [`RuleEntry`][RuleEntry]
 
 
 ### Makefile
@@ -122,21 +124,46 @@ This class encapsulates a makefile. It provides direct access to these builtin v
 - `DEFAULT_GOAL`
 
 #### Construction
- - `new `[`Makefile`][Makefile]`(options?:`[`CreateOptions`][CreateOptions]`);` 
- 	creates an empty makefile
+ - `new `[`Makefile`][Makefile]`(options?:`[`CreateOptions`][CreateOptions]`)` 
+
+ 	Creates an empty makefile with *only* the provided variables (plus `SHELL`, `MAKESHELL`, `MAKE_VERSION`, `MAKE_HOST`) and rules.
+
  - [`Makefile`][Makefile]`.`[`parse`][parse]`(text: string, options?:`[`CreateOptions`][CreateOptions]`)`
- 	creates a makefile from text
+
+ 	As above, but also parses the text into the makefile.
+
  - [`Makefile`][Makefile]`.load(filePath: string, options?:`[`CreateOptions`][CreateOptions]`)`
- 	creates a makefile from a file
+
+ 	Creates a makefile from a file. If options.variables is undefined, the environment variables will be used. Also sets `CURDIR` and `MAKEFILE_LIST`.
 
 #### Methods
- - `get(name: string)` lookup a variable
- - `setVariable(name: string, op: string, value: string, origin:VariableOrigin, scope?:`[`Variables`][Variables]`, priv?: boolean)` set a variable.
- - `setFunction(name: string, fn:`[`Function`][Function]`)` override (or add) a function.
- - `addRule(rule:`[`RuleEntry`][RuleEntry]`)` add a rule.
- - [`parse`][parse]`(text: string, file?: string)` parse additional text into makefile (file is used to improve error messages).
- - [`run`][run]`(goals?: string[], options?:`[`RunOptions`][RunOptions]`)` make goals.
-  - `runDirect(goals: string[] = [], options:`[`RunOptionsDirect`][RunOptionsDirect]`)` make goals
+ - `get(name: string)`
+
+    Lookup a variable.
+ 
+ - `setVariable(name: string, op: string, value: string, origin: VariableOrigin)`
+
+    Set a variable.
+
+ - `setFunction(name: string, fn: `[`Function`][Function]`)`
+
+    Override (or add) a function.
+
+ - `addRule(rule: `[`RuleEntry`][RuleEntry]`)`
+
+    Add a rule.
+
+ - [`parse`][parse]`(text: string, file?: string)`
+
+    Parse additional text into the makefile (`file` is used to improve error messages).
+
+ - [`run`][run]`(goals?: string[], options?: `[`RunOptions`][RunOptions]`)`
+ 
+    Make goals using provided options.
+
+  - `runDirect(goals: string[] = [], options: `[`RunOptionsDirect`][RunOptionsDirect]`)`
+  
+    Make goals using low-level options.
 
 ### Create options
 
@@ -150,10 +177,11 @@ See [`CreateOptions`][CreateOptions]
 
 
 ```ts
-import { Makefile } from '@isopodlabs/make';
+import { Makefile, environmentVariables } from '@isopodlabs/make';
 
 // Parse from text
 const mf = await Makefile.parse(text, {
+  variables: environmentVariables(),
   includeDirs: ['.vscode', 'config/includes'],   // search paths for include
 });
 
@@ -165,9 +193,9 @@ const mf2 = await Makefile.load('path/to/Makefile');
 
 See [`RunOptions`][RunOptions]:
 
-- `mode`: `'normal' | 'dry-`[`run`][run]`' | 'question' | 'touch'`
-- `jobs`: number (default 1)
-- `output`: `(chunk: string) => void` to capture stdout/stderr
+- `mode` one of `normal`, `dry-`[`run`][run], `question`, `touch`
+- `jobs` number of simultaneous jobs (default 1)
+- `output` to capture stdout/stderr
 - `ignoreErrors`, `silent`, `noSilent`, `oneshell`
 - `keepGoing`, `checkSymlink`, `printDirectory`:
 - `always`, `assumeOld`, `assumeNew`: override timestamp checks
@@ -181,12 +209,23 @@ const changed = await mf.run(['target'], {
 });
 ```
 
+See [`RunOptionsDirect`][RunOptionsDirect] for lower-level control over execution.
+
+### Rules
+See [`RuleEntry`][RuleEntry]:
+- `targets`		    whitespace-separated list of targets
+- `prerequisites` whitespace-separated list of prerequisites
+- `recipe` optional array of strings containing the recipe
+- `doubleColon`	true if it's a doubleColon rule
+- `grouped` true if the rule is a grouped rule
+- `builtin` true if the rule is a builtin rule
+- `file`, `lineNo` location of definition
 
 ## CLI
 This is an optional sub-module, which:
-- Provides a gnumake-compatible command line interface
-- Automatically invoked if run directly from command line
-- Optionally supplies builtin rules and variables
+- Provides a gnumake-compatible command line interface.
+- Is automatically invoked if run directly from command line.
+- Optionally supplies builtin rules and variables.
 - Can be run programmatically, but note that the first two arguments should be the node executable and the path to the make/cli module.
 
 ```ts
@@ -198,11 +237,11 @@ await cli(process.argv);
 Using the [`cli`][cli] module's [`builtinRules`][builtinRules] and [`builtinVariables`][builtinVariables]:
 
 ```ts
-import { Makefile } from '@isopodlabs/make';
+import { Makefile, environmentVariables } from '@isopodlabs/make';
 import { builtinRules, builtinVariables } from '@isopodlabs/make/cli';
 
 const mf = await Makefile.load('path/to/Makefile', {
-	variables: builtinVariables(),
+	variables: {...builtinVariables(), ...environmentVariables()},
 	rules: builtinRules(),
 });
 mf.run(['all'], {jobs: 6})
@@ -213,6 +252,7 @@ mf.run(['all'], {jobs: 6})
 - No archive member support (`lib.a(member.o)`, `$%`), and no jobserver.
 - All rules and variables must be passed to the Makefile constructor (or via Makefile.parse or Makefile.load). The typical rules and variables can be obtained from the CLI component. In particular, variables such as MAKE and MAKEFLAGS are only available if manually provided or when run from the CLI.
 - Special targets with lifecycle semantics are recognized but not fully implemented: `.PRECIOUS`, `.INTERMEDIATE`, `.NOTINTERMEDIATE`, `.SECONDARY`, `.LOW_RESOLUTION_TIME`.
+- Requires Node.js, *however* only index.ts (and the optional cli) rely on any external modules (specifically, path, fs, os, and child_process), so parsing and running makefiles is possible without Node.js.
 
 ## Contributing
 
@@ -224,16 +264,17 @@ Open an issue or pull request on [GitHub](https://github.com/adrianstephens/ts-m
 MIT © Adrian Stephens
 
 <!-- Type References -->
-[run]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L123
-[Makefile]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L304
-[CreateOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L283
-[RunOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L294
-[parse]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/parse.ts#L105
-[Variables]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L15
-[Function]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L25
-[RuleEntry]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L489
-[RunOptionsDirect]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L34
-[VariableValue]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L6
+[join]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/miniPath.ts#L49
+[basename]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/miniPath.ts#L91
+[run]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L102
+[Makefile]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L423
+[CreateOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L402
+[RunOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L413
+[RunOptionsDirect]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L32
+[RuleEntry]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L369
+[parse]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/parse.ts#L80
+[Function]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L22
+[VariableValue]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L3
 [cli]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L246
 [builtinRules]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L216
 [builtinVariables]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L85
