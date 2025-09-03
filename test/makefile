@@ -6,8 +6,8 @@ WIN32   := $(findstring win32,$(MAKE_HOST))
 REM     := $(if $(WIN32),rem,#)
 COPY    := $(if $(WIN32),copy /y, mv)
 TYPE    := $(if $(WIN32),type,cat)
-MKDIR   := $(if $(WIN32),if not exist $1 mkdir $1, mkdir -p $1)
-RMDIR   := $(if $(WIN32),if exist $1 rmdir /s /q $1, rm -rf $1)
+MKDIR   := $(if $(WIN32),if not exist $$1 mkdir $$1, mkdir -p $$1)
+RMDIR   := $(if $(WIN32),if exist $$1 rmdir /s /q $$1, rm -rf $$1)
 
 help:
     @echo Targets:

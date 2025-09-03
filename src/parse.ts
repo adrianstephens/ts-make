@@ -1,4 +1,4 @@
-import { MakefileCore, VariableValue, Variables, Expander, toWords, scanBalanced, unescape, IncludeFiles } from './core';
+import { MakefileCore, VariableValue, Variables, Expander, toWords, scanBalanced, IncludeFiles } from './core';
 
 //-----------------------------------------------------------------------------
 // variable assignment
@@ -52,8 +52,8 @@ async function doConditional(exp: Expander, condition: ConditionalLine): Promise
 	switch (condition.type) {
 		case 'ifeq':	return equality(condition.args);
 		case 'ifneq':	return await equality(condition.args) === false;
-		case 'ifdef':	return !!exp.get(condition.args);
-		case 'ifndef':	return !exp.get(condition.args);
+		case 'ifdef':	return !!exp.get(await exp.expand(condition.args));
+		case 'ifndef':	return !exp.get(await exp.expand(condition.args));
 	}
 }
 
@@ -66,7 +66,7 @@ const directiveRe = new RegExp(`^(${directives.join('|')})(?:\\s+(.*))?$`);
 
 type Directive = typeof directives[number];
 
-function isDirective(line: string): {command: Directive, args: string}|undefined {
+function isDirective(line: string): {command: Directive, args: string} | undefined {
 	const match = line.match(directiveRe);
 	if (match)
 		return { command: match[1] as Directive, args: match[2] || '' };
@@ -121,13 +121,13 @@ export async function parse(mf: MakefileCore, text: string, file: string, includ
 		const lineNo = i + 1;
 
 		try {
-			// Recipe line
+			// recipe line
 			if (mf.recipeRe.test(lines[i])) {
 				mf.addRecipeLine(lines[i].slice(1).trim());
 				continue;
 			}
 
-			// Logical, non-recipe line (handle backslash continuations)
+			// non-recipe line (handle backslash continuations)
 			let line = '';
 			while (i < L && /\\\s*$/.test(lines[i]))
 				line += lines[i++].replace(/\\\s*$/, '');
@@ -135,12 +135,12 @@ export async function parse(mf: MakefileCore, text: string, file: string, includ
 
 			// Remove comments, but not # inside variable references $(...)/${...}
 			const comment = scanBalanced(line, 0, '#');
-			line = unescape(line.slice(0, comment).trim());
+			line = line.slice(0, comment).trim();
 
 			if (!line)
 				continue;
 
-			// Variable assignment
+			// variable assignment
 			const assign = parseAssignment(line);
 			if (assign) {
 				if (assign.define)
@@ -196,7 +196,7 @@ export async function parse(mf: MakefileCore, text: string, file: string, includ
 							const files		= toWords(await mf.expand(args));
 							const noError	= command === 'sinclude'|| command === '-include';
 							const failed	= await includeFiles(files);
-							mf.deferredIncludes.push(...failed.map(file => ({ file, noError, lineNo })));
+							mf.deferredIncludes.push(...failed.map(include => ({ include, noError, file, lineNo })));
 						}
 						break;
 
@@ -250,19 +250,19 @@ export async function parse(mf: MakefileCore, text: string, file: string, includ
 				const left		= line.slice(0, grouped ? colon - 1 : colon).trim();
 
 				if (left) {
-					const targets		= left.trim();
+					let targets			= left.trim();
 					const doubleColon	= line[colon + 1] === ':';
 					const right			= line.slice(colon + (doubleColon ? 2 : 1));
 
 					// target or pattern specific variables
-					const assign 	= parseAssignment(right);
+					const assign 		= parseAssignment(right);
 					if (assign) {
 						await setVariable(assign, mf.scopes[left] ??= new Map<string, VariableValue>());
 						continue;
 					}
 					const semi 			= right.indexOf(';');
-					const prerequisites = (semi >= 0 ? right.slice(0, semi) : right).trim();
 					const recipe		= semi >= 0 ? [right.slice(semi + 1).trim()] : [];
+					let prerequisites	= (semi >= 0 ? right.slice(0, semi) : right).trim();
 
 					if (targets.includes('.EXPORT_ALL_VARIABLES'))
 						mf.exportAll = true;
@@ -279,24 +279,12 @@ export async function parse(mf: MakefileCore, text: string, file: string, includ
 						if (!grouped && !prerequisites && !targets.includes(' ') && targets[0] === '.') {
 							const suff = targets.slice(1).split('.');
 							if (suff.length < 3 && mf.suffixes.has(suff[0]) && (suff.length < 2 || mf.suffixes.has(suff[1]))) {
-								mf.rules.push({
-									targets:		suff.length < 2 ? '%' : '%.' + suff[1],
-									prerequisites:	'%.' + suff[0],
-									recipe,
-									file, lineNo,
-									doubleColon, grouped,
-								});
-								continue;
+								targets			= suff.length < 2 ? '%' : '%.' + suff[1];
+								prerequisites	= '%.' + suff[0];
 							}
 						}
 
-						mf.addRule({
-							targets,
-							prerequisites,
-							recipe,
-							file, lineNo,
-							doubleColon, grouped,
-						});
+						mf.addRule({ targets, prerequisites, recipe, doubleColon, grouped, file, lineNo });
 					}
 
 					continue;

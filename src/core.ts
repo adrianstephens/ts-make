@@ -37,12 +37,12 @@ export function escape(input: string): string {
 		.replaceAll('\\', '\\\\')
 		.replaceAll('#', '\\#');
 }
-export function unescape(input: string): string {
-	return input
-		.replaceAll('$$', '$')
-		.replaceAll('\\\\', '\\')
-		.replaceAll('\\#', '#');
-}
+//export function unescape(input: string): string {
+//	return input
+//		.replaceAll('$$', '$')
+//		.replaceAll('\\\\', '\\')
+//		.replaceAll('\\#', '#');
+//}
 
 export function toWords(text: string) {
 	text = text.trim();
@@ -370,17 +370,18 @@ export interface RuleEntry {
 	targets:		string;
 	prerequisites:	string;
 	recipe?:		string[];
-	file?:			string;
-	lineNo?:		number;		// line of the rule header (1-based)
 	doubleColon?:	boolean;	// means 'terminal' on pattern rules
 	grouped?:		boolean;	// true if the rule is a grouped rule
 	builtin?:		boolean;	// true if the rule is a builtin rule
+	file?:			string;
+	lineNo?:		number;		// line of the rule header (1-based)
 }
 
 export interface DeferredInclude {
-	file:			string;
-	lineNo:			number;
+	include:		string;
 	noError:		boolean;
+	file?:			string;
+	lineNo?:		number;		// line of the rule header (1-based)
 }
 
 export class MakefileCore extends ExpanderClass implements BuiltinVars {

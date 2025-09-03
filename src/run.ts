@@ -458,11 +458,11 @@ export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDi
 
 	const special	= Object.fromEntries(specialTargetNames.map(name => [name, prerequisiteSet(exactRules['.' + name] as Rule)]));
 
-	const incResults = await mapAsync(make.deferredIncludes, inc => buildTarget(inc.file, make));
+	const incResults = await mapAsync(make.deferredIncludes, inc => buildTarget(inc.include, make));
 	if (incResults.some(Boolean)) {
 		const numRules	= make.rules.length;
 		const numScopes = Object.keys(make.scopes).length;
-		await opt.includeFiles(make.deferredIncludes.map(i => i.file));
+		await opt.includeFiles(make.deferredIncludes.map(i => i.include));
 		await prepareRules(make.rules.slice(numRules), make);			// in case new rules were added
 		prepareScopes(Object.entries(make.scopes).slice(numScopes));	// in case new scopes were added
 	}

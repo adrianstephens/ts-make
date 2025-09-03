@@ -1,7 +1,7 @@
 # @isopodlabs/make
 [![npm version](https://img.shields.io/npm/v/@isopodlabs/make.svg)](https://www.npmjs.com/package/@isopodlabs/make)
 [![GitHub stars](https://img.shields.io/github/stars/adrianstephens/ts-make.svg?style=social)](https://github.com/adrianstephens/ts-make)
-[![License](https://img.shields.io/npm/l/@isopodlabs/make.svg)](LICENSE.txt)
+[![License](https://img.shields.io/npm/l/@isopodlabs/make.svg)](LICENSE)
 
 > A robust TypeScript parser and executor for GNU Makefiles.  
 > [View on npm](https://www.npmjs.com/package/@isopodlabs/make) • [View on GitHub](https://github.com/adrianstephens/ts-make)
