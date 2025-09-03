@@ -9,6 +9,9 @@
 			"request": "launch",
 			"name": "Launch make clean",
 			"program": "${workspaceFolder}/dist/cli.js",
+			"runtimeArgs": [
+				"--expose-internals"
+			],
             "cwd": "${workspaceFolder}",
             "args": ["-C", "test", "clean"],
             "sourceMaps": true,
