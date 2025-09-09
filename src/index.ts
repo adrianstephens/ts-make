@@ -67,7 +67,7 @@ export { RuleEntry, VariableValue, defaultFunctions, makeWordFunction, fromWords
 //notintermediate			Supports the .NOTINTERMEDIATE special target
 //oneshell			x		Supports the .ONESHELL special target
 //order-only		x		Supports order-only prerequisites
-//output-sync				Supports the --output-sync command line option
+//output-sync		x		Supports the --output-sync command line option
 //second-expansion	x		Supports secondary expansion of prerequisite lists
 //shell-export		x		Supports exporting make variables to shell functions
 //shortest-stem		x		Uses the “shortest stem” method of choosing which pattern, of multiple applicable options, will be used
@@ -399,6 +399,8 @@ async function runRecipe(recipe: string[], exp: Expander, opt: RecipeOptions,
 // Makefile
 //-----------------------------------------------------------------------------
 
+type Output = (text: string) => void;
+
 export interface CreateOptions {
 	variables?:		Record<string, VariableValue>;
 	functions?:		Record<string, Function>;
@@ -408,21 +410,29 @@ export interface CreateOptions {
 	warnUndef?: 	boolean;
 }
 
-export type RunMode = 'normal' | 'dry-run' | 'question' | 'touch';
+type RunDebugOptions = 'implicit' | 'jobs' | 'makefile' | 'recipe' | 'why';
+
+export interface RunDebug {
+	level?: 		number;
+	options: 		RunDebugOptions[];
+};
 
 export interface RunOptions extends RunOptionsShared {
-	output?:		(text: string) => void;
+	output?:		Output;
 	jobs?: 			number;
 	maxLoad?:		number;
-	mode?: 			RunMode;
+	mode?: 			'normal' | 'dry-run' | 'question' | 'touch';
 	checkSymlink?:	boolean;
 	shuffle?: 		'reverse' | number;
 	outputSync?: 	'target' | 'line' | 'recurse';
+	debug?: 		RunDebug;
 }
+
 
 export class Makefile extends MakefileCore {
 	constructor(options?: CreateOptions) {
 		super(
+			//variables
 			{
 				SHELL: 			{ value: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'},
 				MAKESHELL: 		{ value: process.env.COMSPEC || 'cmd.exe' },
@@ -430,6 +440,7 @@ export class Makefile extends MakefileCore {
 				MAKE_HOST: 		{ value: process.platform },
 				...options?.variables
 			},
+			//functions
 			{
 				eval:	(_exp, commands: string) => this.parse(commands).then(() => ''),
 				shell:	async (_exp, command: string) => new Promise<string>((resolve, reject) => child_process.exec(command, {
@@ -450,7 +461,11 @@ export class Makefile extends MakefileCore {
 			},
 			options?.rules ?? [],
 			options?.includeDirs ?? ['.'],
-			options?.warnUndef ?? false,
+			options?.warnUndef ? (name, value) => {
+				if (!value)
+					console.log(`Unknown variable: ${name}`);
+				return value;
+			} : (name, value) => value,
 			options?.envOverrides ?? false
 		);
 	}
@@ -474,10 +489,16 @@ export class Makefile extends MakefileCore {
 		if (goals.length === 0)
 			goals.push(this.DEFAULT_GOAL);
 
+		const debugEnable = new Set<string>(options?.debug?.options || []);
+		if (options?.debug?.level && options.debug.level > 0) {
+			debugEnable.add('target');
+			debugEnable.add('rule');
+		}
+
 		const r = await run(this, goals, {
 			runRecipe:		options?.mode === 'touch'
-				? (recipe, targets, _exp, _opt) => mapAsync(targets, t => touchFile(path.resolve(cwd, t))).then(() => {})
-				: (recipe, targets, exp, opt) => runRecipe(
+				? (_recipe, targets, _exp, _opt) => mapAsync(targets, t => touchFile(path.resolve(cwd, t))).then(() => {})
+				: (recipe, _targets, exp, opt) => runRecipe(
 					recipe, exp, opt,
 					options?.mode === 'dry-run',
 					options?.outputSync ? text => buffer.push(text) : output,
@@ -506,6 +527,11 @@ export class Makefile extends MakefileCore {
 
 			jobServer:		() => semaphore.acquire(),
 
+			debugOutput:	(why: string, fn: (output: Output) => void) => {
+				if (debugEnable.has(why))
+					fn(output);
+			},
+
 			stopOnRebuild:	options?.mode === 'question',
 
 			...options,
@@ -516,6 +542,7 @@ export class Makefile extends MakefileCore {
 
 	async runDirect(goals: string[] = [], options: Partial<RunOptionsDirect>): Promise<boolean> {
 		const cwd		= this.CURDIR;
+
 		return await run(this, goals, {
 			runRecipe:		(recipe, targets, exp, opt) => runRecipe(recipe, exp, opt, false, _text=>{}, ()=>{}, {
 				cwd,
@@ -529,6 +556,7 @@ export class Makefile extends MakefileCore {
 			getPath:		this.getPath.bind(this),
 			rearrange:		prerequisites => prerequisites,
 			jobServer:		() => Promise.resolve({release() {}}),
+			debugOutput:	(_why: string, _fn: (output: Output) => void) => {},
 			stopOnRebuild:	false,
 			...options
 		});

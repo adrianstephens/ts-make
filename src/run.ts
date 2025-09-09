@@ -4,14 +4,6 @@ export interface Lock {
 	release(): void;
 }
 
-export interface RunDebug {
-	level?: 		number;
-	implicit?: 		boolean;
-	jobs?: 			boolean;
-	makefile?: 		boolean;
-	recipe?: 		boolean;
-	why?: 			boolean;
-};
 
 export interface RecipeOptions {
 	ignoreErrors?: 	boolean;
@@ -26,7 +18,6 @@ export interface RunOptionsShared extends RecipeOptions {
 	keepGoing?: 	boolean;
 	assumeOld?: 	string[];
 	assumeNew?: 	string[];
-	debug?: 		RunDebug;	//unimplemented
 }
 
 export interface RunOptionsDirect extends RunOptionsShared {
@@ -37,6 +28,7 @@ export interface RunOptionsDirect extends RunOptionsShared {
 	getPath:		(target: string) => Promise<string | undefined>;
 	rearrange:		(prerequisites: string[]) => string[];
 	jobServer:		() => Promise<Lock>;
+	debugOutput:	(why: string, fn: (output: (msg: string) => void) => void) => void;
 	stopOnRebuild:	boolean;
 }
 
@@ -302,8 +294,7 @@ export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDi
 	}
 
 	function buildTarget(target: string, parentScope: Expander): Promise<boolean> {
-		//if (opt.debug?.level)
-		//	opt.output('Build target ' + target + '\n');
+		opt.debugOutput('target', output => output('Build target ' + target + '\n'));
 
 		const mark = visited.get(target);
 		if (mark)
@@ -344,8 +335,7 @@ export async function run(make: MakefileCore, goals: string[], opt: RunOptionsDi
 	}
 
 	async function buildRule(target: string, r: Rule, scope: Expander): Promise<boolean> {
-		//if (opt.debug?.level)
-		//	opt.output('Run rule on ' + target + '\n');
+		opt.debugOutput('rule', output => output('Run rule on ' + target + '\n'));
 
 		const extra	= scope.get('.EXTRA_PREREQS');
 		if (extra)

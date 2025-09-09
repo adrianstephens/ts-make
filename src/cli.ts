@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 
-import { Makefile, RunOptions, VariableValue, RuleEntry, environmentVariables } from './index';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { Makefile, RunOptions, RunDebug, VariableValue, RuleEntry, environmentVariables } from './index';
 import { defaultFunctions } from './core';
-import { RunDebug } from './run';
 
 const builtinVars: Record<string, string> = {
 	'.LIBPATTERNS':		'lib%.so lib%.a',
@@ -231,31 +230,32 @@ interface Option {
 	passdown?:		boolean;
 }
 
-const MakeRunDebug: Record<string, Partial<RunDebug>> = {
-	a: {level: 2, implicit: true, jobs: true, makefile: true, recipe: true, why: true},
-	b: {level: 1},
-	v: {level: 2},
-	i: {implicit: true},
-	j: {jobs: true},
-	m: {makefile: true},
-	p: {recipe: true},
-	w: {why: true},
-	n: {level: 0, implicit: false, jobs: false, makefile: false, recipe: false, why: false},
-} as const;
-
 export async function cli(args: string[], output: (s: string)=>void = s => process.stdout.write(s)): Promise<number> {
 	const	variables		= environmentVariables();
-	const	run:			RunOptions 		= {output};
-    const	goals:			string[]		= [];
+	const	debug:			RunDebug 		= {level: 0, options: []};
+	const	run:			RunOptions 		= {output, debug};
+	const	goals:			string[]		= [];
 	const	filenames:		string[]		= [];
 	const	includeDirs:	string[]		= ['.'];
-    let		evals			= '';
+	let		evals			= '';
 	let		directory		= process.cwd();
 	let		noBuiltinRules	= false;
 	let		noBuiltinVars	= false;
 	let		envOverrides	= false;
 	let		warnUndef		= false;
 	let		printDirectory: boolean|undefined;
+
+	const	debugActions: Record<string, ()=>void> = {
+		a() { debug.level = 2; debug.options = ['implicit', 'jobs', 'makefile', 'recipe', 'why']; },
+		b() { debug.level = 1; },
+		v() { debug.level = 2; },
+		i() { debug.options.push('implicit'); },
+		j() { debug.options.push('jobs'); },
+		m() { debug.options.push('makefile'); },
+		p() { debug.options.push('recipe'); },
+		w() { debug.options.push('why'); },
+		n() { debug.level = 0; debug.options = []; },
+	} as const;
 
 	const options: Option[] = [
 		{
@@ -277,12 +277,12 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		{
 			names: ['d'],
 			description: 'Print debugging information in addition to normal processing.',
-			process: () => run.debug = MakeRunDebug.a
+			process: () => debugActions.a()
 		},
 		{
 			names: ['debug'],
 			description: 'Print debugging information in addition to normal processing.',
-			process: arg => run.debug = arg.split(',').map(i => i[0]).reduce((acc, curr) => ({...acc, ...MakeRunDebug[curr]}), run.debug ?? MakeRunDebug.n)
+			process: arg => arg.split(',').forEach(i => debugActions[i[0]]?.())
 		},
 		{
 			names: ['e', 'environment-overrides'],
@@ -401,7 +401,7 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 		{
 			names: ['trace'],
 			description: 'Show tracing information for make execution. (shorthand for --debug=print,why)',
-			process: () => run.debug = {...(run.debug ?? MakeRunDebug.n), recipe: true, why: true, level: 2}
+			process: () => { debugActions.p(); debugActions.w(); }
 		},
 		{
 			names: ['t', 'touch'],
@@ -494,8 +494,8 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 			variables[name] = { value, origin: 'command line' };
 			continue;
 		} else {
-	        // Otherwise, treat as a goal
-	        goals.push(arg);
+			// Otherwise, treat as a goal
+			goals.push(arg);
 		}
 	}
 

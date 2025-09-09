@@ -266,15 +266,15 @@ MIT © Adrian Stephens
 <!-- Type References -->
 [join]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/miniPath.ts#L49
 [basename]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/miniPath.ts#L91
-[run]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L102
-[Makefile]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L423
-[CreateOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L402
-[RunOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L413
-[RunOptionsDirect]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L32
-[RuleEntry]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L369
+[run]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L94
+[Makefile]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L432
+[CreateOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L404
+[RunOptions]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/index.ts#L420
+[RunOptionsDirect]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/run.ts#L23
+[RuleEntry]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L360
 [parse]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/parse.ts#L80
 [Function]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L22
 [VariableValue]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/core.ts#L3
-[cli]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L246
-[builtinRules]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L216
-[builtinVariables]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L85
+[cli]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L233
+[builtinRules]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L215
+[builtinVariables]: https://github.com/adrianstephens/ts-make/blob/HEAD/src/cli.ts#L84

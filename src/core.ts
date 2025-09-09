@@ -24,7 +24,8 @@ export interface Function {
 	raw?:		boolean;
 }
 
-export type SearchPath = (file: string, paths: string[], cwd: string) => Promise<string | undefined>;
+export type CheckVar	= (name: string, value: VariableValue | undefined) => VariableValue | undefined;
+export type SearchPath	= (file: string, paths: string[], cwd: string) => Promise<string | undefined>;
 export type IncludeFiles = (files: string[]) => Promise<string[]>;
 
 //-----------------------------------------------------------------------------
@@ -37,12 +38,6 @@ export function escape(input: string): string {
 		.replaceAll('\\', '\\\\')
 		.replaceAll('#', '\\#');
 }
-//export function unescape(input: string): string {
-//	return input
-//		.replaceAll('$$', '$')
-//		.replaceAll('\\\\', '\\')
-//		.replaceAll('\\#', '#');
-//}
 
 export function toWords(text: string) {
 	text = text.trim();
@@ -71,13 +66,7 @@ export async function applyWordsAsync(names: string, func: (word: string)=>Promi
 	return fromWords(await Promise.all(toWords(names).map(func)));
 }
 
-function patsubst(pattern: string, replacement: string, text: string) {
-	const re = anchored(escapeRe(pattern).replace('%', '(.*?)'));
-	replacement = replacement.replace('%', '$1');
-	return applyWords(text, word => word.replace(re, replacement));
-}
-
-function raw<F extends(exp: Expander, ...args: any[]) => any>(fn: F): Function {
+export function raw<F extends(exp: Expander, ...args: any[]) => any>(fn: F): Function {
 	return Object.assign(fn, {raw: true});
 }
 
@@ -85,7 +74,15 @@ export function makeWordFunction(fn: (name: string) => string): Function {
 	return (exp, names) => applyWords(names, fn);
 }
 
+function patsubst(pattern: string, replacement: string, text: string) {
+	const re = anchored(escapeRe(pattern).replace('%', '(.*?)'));
+	replacement = replacement.replace('%', '$1');
+	return applyWords(text, word => word.replace(re, replacement));
+}
+
+
 export const defaultFunctions: Record<string, Function> = {
+
 // Functions for String Substitution and Analysis
 	subst:		(exp, pattern: string, replacement: string, text: string) => text.replace(new RegExp(pattern, 'g'), replacement),
 	patsubst:	(exp, pattern: string, replacement: string, text: string) => patsubst(pattern, replacement, text),
@@ -186,16 +183,19 @@ function nextChar(input: string, i: number) {
 }
 
 export function scanBalanced(input: string, i: number, ch: string) {
-	for (; i < input.length; i++) {
-		if (input[i] === ch)
-			break;
-
+	for (; i < input.length && input[i] !== ch; i++)
 		i = nextChar(input, i);
-	}
 	return i;
 }
 
 export class ExpanderClass implements Expander {
+	constructor(public variables: Variables, public functions: Record<string, Function>, private depth: number, private check: CheckVar) {
+	}
+
+	get(name: string): VariableValue | undefined {
+		return this.check(name, this.variables.get(name));
+	}
+
 	private async expandOne(body: string): Promise<string> {
 		let end = 0;
 		while (end < body.length && body[end] !== ' ' && body[end] !== ':')
@@ -252,15 +252,6 @@ export class ExpanderClass implements Expander {
 			: val;
 	}
 
-	constructor(public variables: Variables, public functions: Record<string, Function>, private depth: number, private warnUndef: boolean) {
-	}
-
-	get(name: string): VariableValue | undefined {
-		if (this.warnUndef && !this.variables.has(name))
-			console.log(`Unknown variable: ${name}`);
-		return this.variables.get(name);
-	}
-
 	async expand(input: string): Promise<string> {
 		//return expandVariables(input, this.variables, this.functions);
 		if (this.depth > 50) {
@@ -304,14 +295,14 @@ export class ExpanderClass implements Expander {
 	with(context: Record<string, VariableValue> | Map<string, VariableValue> | undefined): Expander {
 		return context ? new ExpanderClass(
 			new Map([...this.variables, ...(context instanceof Map ? context : Object.entries(context))]),
-			this.functions, this.depth, this.warnUndef
+			this.functions, this.depth, this.check
 		) : this;
 	}
 
 	withoutPrivate(): Expander {
 		return new ExpanderClass(
 			new Map([...this.variables].filter(([_, v]) => !v.priv)),
-			this.functions, this.depth, this.warnUndef
+			this.functions, this.depth, this.check
 		);
 	}
 	
@@ -419,9 +410,10 @@ export class MakefileCore extends ExpanderClass implements BuiltinVars {
 		functions: Record<string, Function>,
 		public rules: RuleEntry[],
 		public includeDirs: string[],
-		warnUndef: boolean, public envOverrides: boolean
+		check: CheckVar,
+		public envOverrides: boolean
 	) {
-		super(new Map(Object.entries(variables)), functions, 0, warnUndef);
+		super(new Map(Object.entries(variables)), functions, 0, check);
 
 		for (const i of '?@*%^+<') {
 			this.variables.set(i + 'D', { value: `$(patsubst %/,%,$(patsubst %\\,%,$(dir $${i})))`, origin: 'automatic', recurse: true });
