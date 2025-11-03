@@ -5,7 +5,7 @@
 			"type": "npm",
 			"script": "build",
 			"group": "build",
-			"problemMatcher": "$tsc-watch",
+			"problemMatcher": "$tsc",
 			"label": "npm: build",
 			"detail": "tsc"
 		},

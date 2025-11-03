@@ -573,6 +573,5 @@ export async function cli(args: string[], output: (s: string)=>void = s => proce
 // Auto-invoke CLI if run directly as binary
 //-----------------------------------------------------------------------------
 
-if (require.main === module) {
+if (require.main === module)
 	cli(process.argv).then(code => process.exit(code));
-}
