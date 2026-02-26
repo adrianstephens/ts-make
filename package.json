@@ -20,8 +20,8 @@
 	],
 	"scripts": {
 		"build": "tsc",
+		"watch": "tsc -watch -p ./",
 		"lint": "eslint \"src/**/*.ts\"",
-		"test": "echo \"No tests specified\" && exit 0",
 		"patch": "ts-patch install"
 	},
 	"keywords": [

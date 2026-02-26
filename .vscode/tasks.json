@@ -10,6 +10,14 @@
 			"detail": "tsc"
 		},
 		{
+			"type": "npm",
+			"script": "watch",
+			"group": "build",
+			"problemMatcher": "$tsc-watch",
+			"label": "npm: watch",
+			"isBackground": true
+		},
+		{
 			"type": "shell",
 			"label": "makelinks",
 			"command": "ts-node ./scripts/makelinks.ts",
