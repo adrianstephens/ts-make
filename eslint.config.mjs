@@ -1,5 +1,7 @@
 import eslint from "@eslint/js";
 import tslint from "typescript-eslint";
+import { dirname } from 'path';
+import { fileURLToPath } from 'url';
 async function maybeImport(modulePath) { try { return await import(modulePath); } catch { return undefined; } }
 let customPlugin = await maybeImport('../eslint-custom.mjs');
 // @ts-check
@@ -32,5 +34,11 @@ export default tslint.config(
 	},
 	{
 		files: ["src/*.ts"],
+		languageOptions: {
+			parserOptions: {
+				project: './tsconfig.json',
+				tsconfigRootDir: dirname(fileURLToPath(import.meta.url))
+			}
+		}
 	}
 );

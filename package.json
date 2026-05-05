@@ -33,12 +33,5 @@
 		"nodejs"
 	],
 	"author": "Adrian Stephens",
-	"license": "MIT",
-	"devDependencies": {
-		"@types/node": "^22.13.8",
-		"eslint": "^9.21.0",
-		"ts-node": "^10.9.2",
-		"ts-patch": "^3.3.0",
-		"typescript-eslint": "^8.26.0"
-	}
+	"license": "MIT"
 }
